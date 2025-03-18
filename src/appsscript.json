@@ -1,0 +1,21 @@
+{
+  "timeZone": "America/Los_Angeles",
+  "dependencies": {},
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8",
+  "dataStudio": {
+    "name": "Couchbase",
+    "logoUrl": "https://www.couchbase.com/wp-content/uploads/2022/08/CB-logo-R_B_B.svg",
+    "company": "Couchbase Community Connector",
+    "companyUrl": "https://www.couchbase.com/",
+    "addonUrl": "https://github.com/googledatastudio/community-connectors/tree/master/couchbase",
+    "supportUrl": "https://github.com/googledatastudio/community-connectors/issues/new?title=Couchbase%20Connector%20Issue",
+    "description": "Connect to and visualize data from Couchbase Server or Capella. This connector supports N1QL queries, scopes and collections, vector search (7.6+), and advanced query options for optimal performance.",
+    "sources": ["COUCHBASE"],
+    "authType": ["USER_PASS"],
+    "feeType": ["FREE"]
+  },
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/script.external_request"
+  ]
+}

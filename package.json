@@ -1,0 +1,37 @@
+{
+  "name": "couchbase-connector",
+  "version": "1.0.0",
+  "description": "Couchbase Connector for Google Looker Studio",
+  "main": "src/connector.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "push": "clasp push",
+    "watch": "clasp push --watch",
+    "prettier": "prettier --write \"src/**/*.js\"",
+    "lint": "eslint src/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/googledatastudio/community-connectors.git"
+  },
+  "keywords": [
+    "couchbase",
+    "looker-studio",
+    "data-studio",
+    "connector",
+    "nosql",
+    "database"
+  ],
+  "author": "Google Data Studio Developer Relations",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/googledatastudio/community-connectors/issues"
+  },
+  "homepage": "https://github.com/googledatastudio/community-connectors/tree/master/couchbase",
+  "devDependencies": {
+    "@google/clasp": "^2.4.2",
+    "eslint": "^8.0.0",
+    "prettier": "^2.8.0"
+  },
+  "dependencies": {}
+}
