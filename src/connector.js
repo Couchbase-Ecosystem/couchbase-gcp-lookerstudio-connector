@@ -3,13 +3,6 @@
  * This connector allows users to connect to a Couchbase database and run N1QL queries.
  */
 
-var connector = {};
-connector.usernameKey = 'dscc.username';
-connector.passwordKey = 'dscc.password';
-connector.baseUrlKey = 'couchbase.baseUrl';
-connector.bucketKey = 'couchbase.bucket';
-connector.queryKey = 'couchbase.query';
-
 /**
  * Returns the authentication method required by the connector to authorize the
  * third-party service.
@@ -17,11 +10,57 @@ connector.queryKey = 'couchbase.query';
  * @returns {Object} AuthType
  */
 function getAuthType() {
-  var cc = DataStudioApp.createCommunityConnector();
-  return cc
-    .newAuthTypeResponse()
-    .setAuthType(cc.AuthType.USER_PASS)
+  const cc = DataStudioApp.createCommunityConnector();
+  return cc.newAuthTypeResponse()
+    .setAuthType(cc.AuthType.PATH_USER_PASS)
+    .setHelpUrl('https://docs.couchbase.com/server/current/manage/manage-security/manage-users-and-roles.html')
     .build();
+}
+
+/**
+ * Returns true if the auth service has access.
+ * 
+ * @returns {boolean} True if the auth service has access.
+ */
+function isAuthValid() {
+  const userProperties = PropertiesService.getUserProperties();
+  const path = userProperties.getProperty('dscc.path');
+  const username = userProperties.getProperty('dscc.username');
+  const password = userProperties.getProperty('dscc.password');
+  
+  return path && username && password;
+}
+
+/**
+ * Sets the credentials.
+ * 
+ * @param {Request} request The set credentials request.
+ * @returns {Object} An object with an errorCode.
+ */
+function setCredentials(request) {
+  const creds = request.pathUserPass;
+  const path = creds.path;
+  const username = creds.username;
+  const password = creds.password;
+  
+  const userProperties = PropertiesService.getUserProperties();
+  userProperties.setProperty('dscc.path', path);
+  userProperties.setProperty('dscc.username', username);
+  userProperties.setProperty('dscc.password', password);
+  
+  return {
+    errorCode: 'NONE'
+  };
+}
+
+/**
+ * Resets the auth service.
+ */
+function resetAuth() {
+  const userProperties = PropertiesService.getUserProperties();
+  userProperties.deleteProperty('dscc.path');
+  userProperties.deleteProperty('dscc.username');
+  userProperties.deleteProperty('dscc.password');
 }
 
 /**
@@ -31,109 +70,44 @@ function getAuthType() {
  * @returns {Object} Connector configuration to be displayed to the user.
  */
 function getConfig(request) {
-  var cc = DataStudioApp.createCommunityConnector();
-  var config = cc.getConfig();
-
-  config
-    .newInfo()
-    .setId('instructions')
-    .setText(
-      'Enter your Couchbase server information and N1QL query. The query should return a consistent schema.'
-    );
-
-  config
-    .newTextInput()
-    .setId('baseUrl')
-    .setName('Couchbase Server URL')
-    .setHelpText('e.g., https://localhost:8091 or https://cb.<your-endpoint>.cloud.couchbase.com for Capella')
-    .setPlaceholder('https://localhost:8091')
-    .setAllowOverride(true);
-
-  config
-    .newTextInput()
-    .setId('bucket')
-    .setName('Bucket Name')
-    .setHelpText('The name of the Couchbase bucket to query')
-    .setPlaceholder('default')
-    .setAllowOverride(true);
-    
-  config
-    .newTextInput()
-    .setId('scope')
-    .setName('Scope (Optional)')
-    .setHelpText('The name of the scope within the bucket (e.g., inventory)')
-    .setPlaceholder('_default')
-    .setAllowOverride(true);
-    
-  config
-    .newTextInput()
-    .setId('collection')
-    .setName('Collection (Optional)')
-    .setHelpText('The name of the collection within the scope (e.g., airport)')
-    .setPlaceholder('_default')
-    .setAllowOverride(true);
-
-  config
-    .newTextArea()
-    .setId('query')
-    .setName('N1QL Query')
-    .setHelpText('Enter a valid N1QL query. The query should return a consistent schema.')
-    .setPlaceholder('SELECT * FROM `default` LIMIT 100')
-    .setAllowOverride(true);
-    
-  // Advanced options section
-  config
-    .newInfo()
-    .setId('advancedOptions')
-    .setText('Advanced Options (Optional)');
-    
-  config
-    .newSelectSingle()
-    .setId('scanConsistency')
-    .setName('Scan Consistency')
-    .setHelpText('Controls the consistency of the query. NotBounded is fastest but may not include recent mutations.')
-    .setAllowOverride(true)
-    .addOption(
-      config.newOptionBuilder()
-        .setLabel('Not Bounded (Default)')
-        .setValue('not_bounded')
-    )
-    .addOption(
-      config.newOptionBuilder()
-        .setLabel('Request Plus')
-        .setValue('request_plus')
-    );
-    
-  config
-    .newTextInput()
-    .setId('timeout')
-    .setName('Query Timeout (ms)')
-    .setHelpText('Maximum time to wait for the query to complete in milliseconds')
-    .setPlaceholder('30000')
-    .setAllowOverride(true);
-    
-  // Vector search options for Couchbase 7.6+
-  config
-    .newInfo()
-    .setId('vectorSearchInfo')
-    .setText('Vector Search Options (Couchbase Server 7.6+)');
-    
-  config
-    .newCheckbox()
-    .setId('enableVectorSearch')
-    .setName('Enable Vector Search')
-    .setHelpText('Enable vector search capabilities (requires Couchbase Server 7.6+)')
-    .setAllowOverride(true);
-    
-  config
-    .newTextInput()
-    .setId('vectorField')
-    .setName('Vector Field')
-    .setHelpText('The field containing vector embeddings')
-    .setPlaceholder('vector_field')
-    .setAllowOverride(true);
-
-  return config.build();
+  const config = {
+    configParams: [
+      {
+        type: 'INFO',
+        name: 'instructions',
+        text: 'Enter your Couchbase bucket information and N1QL query. The query should return a consistent schema.'
+      },
+      {
+        type: 'TEXTINPUT',
+        name: 'bucket',
+        displayName: 'Bucket Name',
+        helpText: 'The name of the Couchbase bucket to query',
+        placeholder: 'default'
+      },
+      {
+        type: 'TEXTINPUT',
+        name: 'scope',
+        displayName: 'Scope (Optional)',
+        helpText: 'The name of the scope within the bucket (e.g., inventory)',
+        placeholder: '_default'
+      },
+      {
+        type: 'TEXTINPUT',
+        name: 'collection',
+        displayName: 'Collection (Optional)',
+        helpText: 'The name of the collection within the scope (e.g., airport)',
+        placeholder: '_default'
+      },
+      {
+        type: 'TEXTAREA',
+        name: 'query',
+        displayName: 'N1QL Query',
+        helpText: 'Enter a valid N1QL query. The query should return a consistent schema.',
+        placeholder: 'SELECT * FROM `default` LIMIT 100'
+      }
+    ]
+  };
+  return config;
 }
 
 /**
@@ -145,10 +119,23 @@ function getConfig(request) {
 function validateConfig(configParams) {
   configParams = configParams || {};
   
-  if (!configParams.baseUrl) {
-    throwUserError('Couchbase Server URL is required.');
+  // Get stored credentials
+  const userProperties = PropertiesService.getUserProperties();
+  const path = userProperties.getProperty('dscc.path');
+  const username = userProperties.getProperty('dscc.username');
+  const password = userProperties.getProperty('dscc.password');
+  
+  // Validate stored credentials
+  if (!path || !username || !password) {
+    throwUserError('Authentication credentials are missing. Please reconnect to Couchbase.');
   }
   
+  // Add credentials to configParams for use in fetchData
+  configParams.baseUrl = path;
+  configParams.username = username;
+  configParams.password = password;
+  
+  // Validate required config parameters
   if (!configParams.bucket) {
     throwUserError('Bucket name is required.');
   }
@@ -166,41 +153,11 @@ function validateConfig(configParams) {
     configParams.collection = '_default';
   }
   
-  // Check if the URL is for Capella and ensure it's using https
-  if (configParams.baseUrl.indexOf('cloud.couchbase.com') > -1) {
-    if (!configParams.baseUrl.startsWith('https://')) {
-      throwUserError('Couchbase Capella requires a secure connection. URL must start with https://');
+  // Check if the URL is for Capella and ensure it's using a secure connection
+  if (path.indexOf('cloud.couchbase.com') > -1) {
+    if (!path.startsWith('https://') && !path.startsWith('couchbases://')) {
+      throwUserError('Couchbase Capella requires a secure connection. URL must start with https:// or couchbases://');
     }
-  }
-  
-  // Validate and convert timeout to number if provided
-  if (configParams.timeout) {
-    var timeout = parseInt(configParams.timeout, 10);
-    if (isNaN(timeout) || timeout <= 0) {
-      throwUserError('Timeout must be a positive number.');
-    }
-    configParams.timeout = timeout;
-  } else {
-    configParams.timeout = 30000; // Default timeout: 30 seconds
-  }
-  
-  // Validate scan consistency
-  if (configParams.scanConsistency && 
-      configParams.scanConsistency !== 'not_bounded' && 
-      configParams.scanConsistency !== 'request_plus') {
-    throwUserError('Invalid scan consistency value. Must be "not_bounded" or "request_plus".');
-  }
-  
-  // Handle vector search options
-  if (configParams.enableVectorSearch === 'true') {
-    if (!configParams.vectorField) {
-      throwUserError('Vector field is required when vector search is enabled.');
-    }
-    
-    // Set up vector search parameters
-    configParams.vectorSearch = {
-      field: configParams.vectorField
-    };
   }
   
   return configParams;
@@ -216,8 +173,8 @@ function getSchema(request) {
   request.configParams = validateConfig(request.configParams);
   
   try {
-    var result = fetchData(request.configParams);
-    var schema = buildSchema(result);
+    const result = fetchData(request.configParams);
+    const schema = buildSchema(result);
     return { schema: schema };
   } catch (e) {
     throwUserError(e);
@@ -231,48 +188,59 @@ function getSchema(request) {
  * @returns {Array} Schema fields.
  */
 function buildSchema(result) {
-  if (!result || !result.results || result.results.length === 0) {
+  if (!result?.results?.length) {
     throwUserError('Query returned no results. Cannot build schema.');
   }
   
-  var cc = DataStudioApp.createCommunityConnector();
-  var fields = cc.getFields();
-  var types = cc.FieldType;
-  
-  var firstRow = result.results[0];
+  const schema = [];
+  const firstRow = result.results[0];
   
   Object.keys(firstRow).forEach(function(key) {
-    var value = firstRow[key];
-    var type = typeof value;
+    const value = firstRow[key];
+    const type = typeof value;
     
     if (type === 'number') {
-      fields
-        .newMetric()
-        .setId(key)
-        .setName(key)
-        .setType(types.NUMBER);
+      schema.push({
+        name: key,
+        label: key,
+        dataType: 'NUMBER',
+        semantics: {
+          conceptType: 'METRIC',
+          isReaggregatable: true
+        }
+      });
     } else if (type === 'boolean') {
-      fields
-        .newDimension()
-        .setId(key)
-        .setName(key)
-        .setType(types.BOOLEAN);
+      schema.push({
+        name: key,
+        label: key,
+        dataType: 'BOOLEAN',
+        semantics: {
+          conceptType: 'DIMENSION'
+        }
+      });
     } else if (value instanceof Date || (typeof value === 'string' && !isNaN(Date.parse(value)))) {
-      fields
-        .newDimension()
-        .setId(key)
-        .setName(key)
-        .setType(types.YEAR_MONTH_DAY_HOUR);
+      schema.push({
+        name: key,
+        label: key,
+        dataType: 'YEAR_MONTH_DAY_HOUR',
+        semantics: {
+          conceptType: 'DIMENSION',
+          semanticGroup: 'DATETIME'
+        }
+      });
     } else {
-      fields
-        .newDimension()
-        .setId(key)
-        .setName(key)
-        .setType(types.TEXT);
+      schema.push({
+        name: key,
+        label: key,
+        dataType: 'STRING',
+        semantics: {
+          conceptType: 'DIMENSION'
+        }
+      });
     }
   });
   
-  return fields.build();
+  return schema;
 }
 
 /**
@@ -285,29 +253,22 @@ function getData(request) {
   request.configParams = validateConfig(request.configParams);
   
   try {
-    var result = fetchData(request.configParams);
+    const result = fetchData(request.configParams);
     
-    if (!result || !result.results || result.results.length === 0) {
+    if (!result?.results?.length) {
       return {
         schema: [],
         rows: []
       };
     }
     
-    var schema = buildSchema(result);
-    var requestedFieldIds = request.fields.map(function(field) {
-      return field.name;
-    });
-    var requestedFields = schema.filter(function(field) {
-      return requestedFieldIds.indexOf(field.name) > -1;
-    });
+    const schema = buildSchema(result);
+    const requestedFieldIds = request.fields.map(field => field.name);
+    const requestedFields = schema.filter(field => requestedFieldIds.indexOf(field.name) > -1);
     
-    var rows = result.results.map(function(row) {
-      var values = requestedFieldIds.map(function(fieldId) {
-        return row[fieldId] !== undefined ? row[fieldId] : null;
-      });
-      
-      return { values: values };
+    const rows = result.results.map(row => {
+      const values = requestedFieldIds.map(fieldId => row[fieldId] !== undefined ? row[fieldId] : null);
+      return { values };
     });
     
     return {
@@ -326,28 +287,55 @@ function getData(request) {
  * @returns {Object} Query result.
  */
 function fetchData(configParams) {
-  var credentials = getCredentials();
+  const username = configParams.username;
+  const password = configParams.password;
   
-  if (!credentials.username || !credentials.password) {
+  if (!username || !password) {
     throwUserError('Username and password are required.');
   }
   
-  var baseUrl = configParams.baseUrl;
-  var bucket = configParams.bucket;
-  var scope = configParams.scope || '_default';
-  var collection = configParams.collection || '_default';
-  var query = configParams.query;
-  var timeout = configParams.timeout || 30000; // Default timeout of 30 seconds
+  const baseUrl = configParams.baseUrl;
+  const bucket = configParams.bucket;
+  const scope = configParams.scope || '_default';
+  const collection = configParams.collection || '_default';
+  const query = configParams.query;
+  const timeout = 30000; // Default timeout of 30 seconds
   
-  // Construct the Couchbase query API URL
-  var queryUrl = baseUrl.replace(/\/$/, '') + '/query/service';
+  // Note: Google Apps Script doesn't support importing npm packages like the Couchbase SDK.
+  // In a normal Node.js environment, we would use code like:
+  //
+  // const cluster = await couchbase.connect(clusterConnStr, {
+  //   username: username,
+  //   password: password,
+  //   configProfile: 'wanDevelopment',
+  // })
+  // const bucket = cluster.bucket(bucketName)
+  // const collection = bucket.scope(scope).collection(collection)
+  // const result = await cluster.query(query)
+  //
+  // Instead, we're simulating this connection by making HTTP requests to the Query Service endpoint.
   
-  // For Couchbase Capella, use secure connection with configProfile
-  var isCapella = baseUrl.indexOf('cloud.couchbase.com') > -1;
+  // Convert Couchbase connection string to HTTP endpoint for query service
+  let apiBaseUrl = baseUrl;
+  
+  // Handle different URL formats (similar to how SDK would handle connection strings)
+  if (apiBaseUrl.startsWith('couchbases://')) {
+    // Convert couchbases:// to https:// for API calls
+    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbases://'.length);
+  } else if (apiBaseUrl.startsWith('couchbase://')) {
+    // Convert couchbase:// to https:// for API calls
+    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbase://'.length);
+  } else if (apiBaseUrl === 'localhost' || apiBaseUrl.startsWith('localhost:')) {
+    // Add https:// prefix to localhost
+    apiBaseUrl = 'https://' + apiBaseUrl;
+  }
+  
+  // Construct the Couchbase query API URL (equivalent to cluster.query() in SDK)
+  const queryUrl = apiBaseUrl.replace(/\/$/, '') + '/query/service';
   
   // Build the query context based on bucket, scope, and collection
   // Format: bucket.scope.collection for proper scoping
-  var queryContext = bucket;
+  let queryContext = bucket;
   if (scope !== '_default') {
     queryContext += '.' + scope;
   }
@@ -356,37 +344,27 @@ function fetchData(configParams) {
   }
   
   // Prepare the query payload
-  var queryPayload = {
+  const queryPayload = {
     statement: query,
     query_context: queryContext,
     timeout: timeout + "ms" // Add timeout in milliseconds
   };
   
-  // Add scan consistency options if provided
-  if (configParams.scanConsistency) {
-    queryPayload.scan_consistency = configParams.scanConsistency;
-  }
-  
-  // Add vector search parameters if provided
-  if (configParams.vectorSearch) {
-    queryPayload.vector_search = configParams.vectorSearch;
-  }
-  
-  var options = {
+  const options = {
     method: 'post',
     contentType: 'application/json',
     payload: JSON.stringify(queryPayload),
     headers: {
-      Authorization: 'Basic ' + Utilities.base64Encode(credentials.username + ':' + credentials.password)
+      Authorization: 'Basic ' + Utilities.base64Encode(username + ':' + password)
     },
     muteHttpExceptions: true,
     timeout: timeout // Set the HTTP request timeout
   };
   
   try {
-    var response = UrlFetchApp.fetch(queryUrl, options);
-    var responseCode = response.getResponseCode();
-    var responseText = response.getContentText();
+    const response = UrlFetchApp.fetch(queryUrl, options);
+    const responseCode = response.getResponseCode();
+    const responseText = response.getContentText();
     
     if (responseCode !== 200) {
       throwUserError('Error querying Couchbase: ' + responseText);
@@ -396,54 +374,6 @@ function fetchData(configParams) {
   } catch (e) {
     throwUserError('Error connecting to Couchbase: ' + e.toString());
   }
-}
-
-/**
- * Returns true if the auth service has access.
- *
- * @returns {boolean} True if the auth service has access.
- */
-function isAuthValid() {
-  var credentials = getCredentials();
-  return credentials && credentials.username && credentials.password;
-}
-
-/**
- * Returns the user's credentials.
- *
- * @returns {Object} User credentials.
- */
-function getCredentials() {
-  var userProperties = PropertiesService.getUserProperties();
-  var username = userProperties.getProperty(connector.usernameKey);
-  var password = userProperties.getProperty(connector.passwordKey);
-  
-  return {
-    username: username,
-    password: password
-  };
-}
-
-/**
- * Sets the credentials.
- *
- * @param {Object} request The set credentials request.
- * @returns {Object} An object with an errorCode.
- */
-function setCredentials(request) {
-  var userProperties = PropertiesService.getUserProperties();
-  userProperties.setProperty(connector.usernameKey, request.userPass.username);
-  userProperties.setProperty(connector.passwordKey, request.userPass.password);
-  return { errorCode: 'NONE' };
-}
-
-/**
- * Resets the auth service.
- */
-function resetAuth() {
-  var userProperties = PropertiesService.getUserProperties();
-  userProperties.deleteProperty(connector.usernameKey);
-  userProperties.deleteProperty(connector.passwordKey);
 }
 
 /**

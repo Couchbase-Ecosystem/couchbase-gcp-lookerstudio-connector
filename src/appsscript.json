@@ -12,7 +12,7 @@
     "supportUrl": "https://github.com/googledatastudio/community-connectors/issues/new?title=Couchbase%20Connector%20Issue",
     "description": "Connect to and visualize data from Couchbase Server or Capella. This connector supports N1QL queries, scopes and collections, vector search (7.6+), and advanced query options for optimal performance.",
     "sources": ["COUCHBASE"],
-    "authType": ["USER_PASS"],
+    "authType": ["PATH_USER_PASS"],
     "feeType": ["FREE"]
   },
   "oauthScopes": [
