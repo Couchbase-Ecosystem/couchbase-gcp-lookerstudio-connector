@@ -1,4 +1,4 @@
-# Couchbase Connector for Google Looker Studio
+# [WIP] Couchbase Connector for Google Looker Studio
 
 This connector allows you to connect to a Couchbase database and run N1QL queries to visualize your data in Google Looker Studio.
 
