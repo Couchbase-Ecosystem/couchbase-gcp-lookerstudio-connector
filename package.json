@@ -30,8 +30,8 @@
   "homepage": "https://github.com/googledatastudio/community-connectors/tree/master/couchbase",
   "devDependencies": {
     "@google/clasp": "^2.4.2",
+    "dotenv": "^16.5.0",
     "eslint": "^8.0.0",
     "prettier": "^2.8.0"
-  },
-  "dependencies": {}
+  }
 }

@@ -75,7 +75,7 @@ function getConfig(request) {
       {
         type: 'INFO',
         name: 'instructions',
-        text: 'Enter your Couchbase bucket information and N1QL query. The query should return a consistent schema.'
+        text: 'Enter your Couchbase connection details and N1QL query. Use a publicly accessible URL (e.g., Capella or a public IP/domain), not localhost. The query should return a consistent schema.'
       },
       {
         type: 'TEXTINPUT',
@@ -102,8 +102,8 @@ function getConfig(request) {
         type: 'TEXTAREA',
         name: 'query',
         displayName: 'N1QL Query',
-        helpText: 'Enter a valid N1QL query. The query should return a consistent schema.',
-        placeholder: 'SELECT * FROM `default` LIMIT 100'
+        helpText: 'Enter a valid N1QL query (e.g., SELECT * FROM `travel-sample`.inventory.airport LIMIT 100). The query should return a consistent schema.',
+        placeholder: 'SELECT * FROM `travel-sample`.inventory.airport LIMIT 100'
       }
     ]
   };
@@ -323,14 +323,27 @@ function fetchData(configParams) {
     // Convert couchbases:// to https:// for API calls
     apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbases://'.length);
   } else if (apiBaseUrl.startsWith('couchbase://')) {
-    // Convert couchbase:// to https:// for API calls
-    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbase://'.length);
-  } else if (apiBaseUrl === 'localhost' || apiBaseUrl.startsWith('localhost:')) {
-    // Add https:// prefix to localhost
-    apiBaseUrl = 'https://' + apiBaseUrl;
+    // Convert couchbase:// to http:// for API calls (assuming non-secure if couchbase://)
+    // Or force https:// if preferred: 'https://' + apiBaseUrl.substring('couchbase://'.length);
+    apiBaseUrl = 'http://' + apiBaseUrl.substring('couchbase://'.length);
+  }
+  
+  // Ensure the URL has a scheme (default to http if missing, unless it looks like Capella)
+  if (!apiBaseUrl.startsWith('http://') && !apiBaseUrl.startsWith('https://')) {
+    if (apiBaseUrl.includes('cloud.couchbase.com')) {
+      // Default Capella to https
+      apiBaseUrl = 'https://' + apiBaseUrl;
+    } else {
+       // Default other connections to http (adjust if https is standard for your non-Capella setups)
+      apiBaseUrl = 'http://' + apiBaseUrl;
+    }
   }
   
   // Construct the Couchbase query API URL (equivalent to cluster.query() in SDK)
+  // Default port for Query service is 8093 (HTTP) or 18093 (HTTPS)
+  // We need to ensure the correct port is present or added if common ports (80, 443) were omitted.
+  // This part requires careful handling based on expected user input.
+  // For simplicity here, we assume the user includes the port if it's not standard http/https.
   const queryUrl = apiBaseUrl.replace(/\/$/, '') + '/query/service';
   
   // Build the query context based on bucket, scope, and collection

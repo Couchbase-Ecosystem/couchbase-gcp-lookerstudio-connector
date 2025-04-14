@@ -1,0 +1,398 @@
+
+Search
+Write
+
+Kaustav Ghosh
+Get unlimited access to the best of Medium for less than $1/week.
+Become a member
+
+
+Kaushal
+Kaushal
+
+·
+Follow
+
+5 min read
+·
+Mar 17, 2023
+89
+
+
+
+
+
+
+Creating a Custom Data Connector For Google Looker Studio
+
+Are you looking to fetch data from an external API and display it in Google Looker Studio, Don’t know where to start? Look no further than Apps Script, a powerful development platform provided by Google.
+
+Google Apps Script is a rapid application development platform that makes it fast and easy to create business applications that integrate with Google Workspace. You write code in JavaScript and have access to built-in libraries for favorite Google Workspace applications like Gmail, Calendar, Drive, and more.
+
+In this blog post, we’ll explore how to use Apps Script to create a data connector that fetches data from an external API and displays it in Google Looker Studio lets you build live, interactive dashboards with beautiful data visualizations, for free. Fetch your data from a variety of sources and create unlimited reports in Looker Studio, with full editing and sharing capabilities on Google Looker Studio.
+
+Google Loker Studio is a powerful tool for visualizing data and creating informative reports. However, sometimes the data you need to include in your reports are unavailable through the built-in connectors provided by Google. In these cases, you can create a custom data connector to fetch data from external sources and integrate it into your reports.
+
+We’ll walk through the process of creating a custom data connector that fetches data from an external API and includes it in Google Looker Studio Reports.
+
+Break Down the Code:
+
+The code we’ll be using consists of several functions that work together to retrieve data from an external API and return it in a format that can be used in the Goole Looker Studio. Let’s take a closer look at each function.
+
+The code starts by defining by getConfig function. This function returns a configuration object that can be used to specify configuration parameters for your data source. In this case, the configuration object is empty, which means that no configuration parameters are needed.
+
+function getConfig(request) {
+  var config = {
+    configParams: [
+    ]
+  };
+  return config;
+};
+Next, the code defines is Schema array that describes the schema of the data that the data source will return. The schema defines the name, datatype, and semantics of each field in the data. In this case, the schema includes fields for id, title, description, price, discount percentage, rating, stock, brand, and category.
+
+var Schema = [
+  {
+    name: 'id',
+    label: 'ID',
+    dataType: 'NUMBER',
+    semantics: {
+      conceptType: 'DIMENSION'
+    }
+  },
+  {
+    name: 'title',
+    label: 'Title',
+    dataType: 'STRING',
+    semantics: {
+      conceptType: 'DIMENSION'
+    }
+  },
+  {
+    name: 'description',
+    label: 'Description',
+    dataType: 'STRING',
+    semantics: {
+      conceptType: 'DIMENSION'
+    }
+  },
+  {
+    name: 'price',
+    label: 'Price',
+    dataType: 'NUMBER',
+    semantics: {
+      conceptType: 'METRIC',
+      isReaggregatable: true
+    }
+  },
+  {
+    name: 'discountPercentage',
+    label: 'Discount Percentage',
+    dataType: 'NUMBER',
+    semantics: {
+      conceptType: 'METRIC',
+      isReaggregatable: true
+    }
+  },
+  {
+    name: 'rating',
+    label: 'Rating',
+    dataType: 'NUMBER',
+    semantics: {
+      conceptType: 'METRIC',
+      isReaggregatable: true
+    }
+  },
+  {
+    name: 'stock',
+    label: 'Stock',
+    dataType: 'NUMBER',
+    semantics: {
+      conceptType: 'METRIC',
+      isReaggregatable: true
+    }
+  },
+  {
+    name: 'brand',
+    label: 'Brand',
+    dataType: 'STRING',
+    semantics: {
+      conceptType: 'DIMENSION'
+    }
+  },
+  {
+    name: 'category',
+    label: 'Category',
+    dataType: 'STRING',
+    semantics: {
+      conceptType: 'DIMENSION'
+    }
+  }
+];
+The getSchema function returns the schema object defined in Schema. This function is called the Data Looker Studio when the user sets up the data source.
+
+function getSchema(request) {
+  return {schema: Schema};
+};
+
+The getData function retrieves data from an external API and returns it in a format that can be used by Data Studio. The function starts by using the UrlFetchApp service to fetch data from the API. It then parses the JSON response and extracts the data into an array of rows.
+
+function getData(request) {
+  var url = "https://dummyjson.com/products";
+  var response = UrlFetchApp.fetch(url);
+  var json = response.getContentText();
+  var data = JSON.parse(json).products;
+
+  var dataSchema = [];
+  request.fields.forEach(function(field) {
+    for (var i = 0; i < Schema.length; i++) {
+      if (Schema[i].name === field.name) {
+        dataSchema.push(Schema[i]);
+        break;
+      }
+    }
+  });
+The getData function also uses the request object to determine which fields to include in the returned data. It iterates through the request. fields array, looking for fields with matching names in the Schema array. For each matching field, it adds the corresponding data to the returned row.
+
+  var rows = [];
+  data.forEach(function(item) {
+    var row = [];
+    request.fields.forEach(function(field) {
+      switch (field.name) {
+        case 'id':
+          row.push(item.id);
+          break;
+        case 'title':
+          row.push(item.title);
+          break;
+        case 'description':
+          row.push(item.description);
+          break;
+        case 'price':
+          row.push(item.price);
+          break;
+        case 'discountPercentage':
+          row.push(item.discountPercentage);
+          break;
+        case 'rating':
+          row.push(item.rating);
+          break;
+        case 'stock':
+          row.push(item.stock);
+          break;
+        case 'brand':
+          row.push(item.brand);
+          break;
+        case 'category':
+          row.push(item.category);
+          break;
+        default:
+          row.push('');
+      }
+    });
+    rows.push({values: row});
+  });
+  return {
+    schema: dataSchema,
+    rows: rows
+  };
+};
+Finally, the getAuthType function returns an object that specifies the authentication type for the data source. In this case, the authentication type is set to NONE, which means that no authentication is required.
+
+function getAuthType() {
+  var response = {
+    "type": "NONE"
+  };
+  return response;
+}
+Using this code, you can create a custom data source in Data Studio that retrieves data from an external API and displays it in your reports.
+
+
+Project Manifest File
+
+The manifest file contains information about your Community Connector that is required to deploy and use your connector in Looker Studio.
+
+The manifest (appsscript.json) is a JSON file in your Apps Script connector project. It contains certain information about your Community Connector that is required to deploy and use your connector in Looker Studio.
+
+
+{
+  "timeZone": "Asia/Kolkata",
+  "dependencies": {
+  },
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8",
+  "dataStudio": {
+    "name":"Product_API_CONNECTOR",
+    "company":"DataSlush",
+    "logoUrl":"https://dataslush.com/wp-content/uploads/2022/09/WhatsApp-Image-2022-09-03-at-6.52.29-PM-768x277.jpeg",
+    "companyUrl":"https://dataslush.com/",
+    "addonUrl": "https://dataslush.com/",
+    "supportUrl":"https://dataslush.com/",
+    "description": "Connect Data Studio to web service",
+    "sources": ["CUSTOM_JSON"],
+    "authType": ["NONE"],
+    "feeType": ["FREE"]
+  }
+}
+Conclusion:
+
+Connecting external APIs to Data Studio can be a powerful way to extend the capabilities of your reports. By using the code snippet provided in this blog post, you can easily connect an external API to Data Studio and start visualizing your data in new and exciting ways.
+
+Looker Studio
+Data Studio Connector
+Community Connector
+Google Communityconnector
+Google Data Studio
+89
+
+
+
+
+
+Kaushal
+Written by Kaushal
+8 Followers
+·
+4 Following
+Data Engineer
+
+Follow
+
+No responses yet
+Kaustav Ghosh
+Kaustav Ghosh
+﻿
+
+Cancel
+Respond
+More from Kaushal
+Kaushal
+Kaushal
+
+The Story of Data
+Long time no blog! 😅
+Apr 17, 2024
+1
+
+
+See all from Kaushal
+Recommended from Medium
+This new IDE from Google is an absolute game changer
+Coding Beauty
+In
+
+Coding Beauty
+
+by
+
+Tari Ibaba
+
+This new IDE from Google is an absolute game changer
+This new IDE from Google is seriously revolutionary.
+
+Mar 12
+4.2K
+226
+
+
+Goodbye RAG? Gemini 2.0 Flash Have Just Killed It!
+Everyday AI
+In
+
+Everyday AI
+
+by
+
+Manpreet Singh
+
+Goodbye RAG? Gemini 2.0 Flash Have Just Killed It!
+Alright!!!
+
+Feb 10
+3.5K
+148
+
+
+The 5 paid subscriptions I actually use in 2025 as a Staff Software Engineer
+Level Up Coding
+In
+
+Level Up Coding
+
+by
+
+Jacob Bennett
+
+The 5 paid subscriptions I actually use in 2025 as a Staff Software Engineer
+Tools I use that are cheaper than Netflix
+
+Jan 7
+12.3K
+310
+
+
+10 Power BI Interview Questions That Help Me Hire The Best
+Microsoft Power BI
+In
+
+Microsoft Power BI
+
+by
+
+Akshay Mishra
+
+10 Power BI Interview Questions That Help Me Hire The Best
+These questions have helped me identify the best from the rest.
+
+Apr 3
+91
+3
+
+
+Why Companies Are Saying GoodBye to Next.js?
+Dev Simplified
+In
+
+Dev Simplified
+
+by
+
+Neha Gupta
+
+Why Companies Are Saying GoodBye to Next.js?
+Are you using Next.js or planning to for your next project? Then you need to know this before making a decision!
+
+Apr 2
+1.3K
+70
+
+
+The Hidden Complexity of BI Platform Migration: Lessons Learned From Migrating Power BI to Looker.
+Tom Z
+Tom Z
+
+The Hidden Complexity of BI Platform Migration: Lessons Learned From Migrating Power BI to Looker.
+Recently I had an opportunity to migrate some Power BI dashboards into Google Looker. While migrating dashboards between business…
+Jan 5
+1
+
+
+See more recommendations
+Help
+
+Status
+
+About
+
+Careers
+
+Press
+
+Blog
+
+Privacy
+
+Rules
+
+Terms
+
+Text to speech
