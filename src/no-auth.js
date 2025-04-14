@@ -128,10 +128,24 @@ function buildSchema(result) {
   }
   
   const schema = [];
+  // Get the first row to determine the structure
   const firstRow = result.results[0];
   
-  Object.keys(firstRow).forEach(function(key) {
-    const value = firstRow[key];
+  // Check if the data is nested under a key (common pattern for SELECT * FROM collection)
+  // Attempt to find the key matching the collection name or the first key if only one exists
+  let dataObject = firstRow;
+  const keys = Object.keys(firstRow);
+  if (keys.length === 1 && typeof firstRow[keys[0]] === 'object' && firstRow[keys[0]] !== null) {
+    // If there's only one key and its value is an object, assume data is nested under it
+    dataObject = firstRow[keys[0]];
+    Logger.log('Schema building: Data appears nested under key: %s', keys[0]);
+  } else {
+    Logger.log('Schema building: Data appears to be at the top level.');
+  }
+  
+  // Build schema from the keys of the actual data object
+  Object.keys(dataObject).forEach(function(key) {
+    const value = dataObject[key];
     const type = typeof value;
     
     if (type === 'number') {
@@ -200,7 +214,14 @@ function getData(request) {
     const requestedFields = schema.filter(field => requestedFieldIds.indexOf(field.name) > -1);
     
     const rows = result.results.map(row => {
-      const values = requestedFieldIds.map(fieldId => row[fieldId] !== undefined ? row[fieldId] : null);
+      // Handle potential nesting similar to buildSchema
+      let dataObject = row;
+      const keys = Object.keys(row);
+      if (keys.length === 1 && typeof row[keys[0]] === 'object' && row[keys[0]] !== null) {
+         dataObject = row[keys[0]];
+      }
+      // Extract values from the actual data object
+      const values = requestedFieldIds.map(fieldId => dataObject[fieldId] !== undefined ? dataObject[fieldId] : null);
       return { values };
     });
     
