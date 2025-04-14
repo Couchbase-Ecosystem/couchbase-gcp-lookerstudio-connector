@@ -3,73 +3,24 @@
  * This connector allows users to connect to a Couchbase database and run N1QL queries.
  */
 
+// Hardcoded credentials (replace with your actual Capella details for testing)
+const HARDCODED_URL = "xyz"; // Include port if needed
+const HARDCODED_USERNAME = "xyz";
+const HARDCODED_PASSWORD = "xyz";
+
 /**
- * Returns the authentication method required by the connector to authorize the
- * third-party service.
- *
- * @returns {Object} AuthType
+ * Returns the authentication method required by the connector.
+ * Setting to NONE for hardcoded testing.
  */
 function getAuthType() {
   const cc = DataStudioApp.createCommunityConnector();
   return cc.newAuthTypeResponse()
-    .setAuthType(cc.AuthType.PATH_USER_PASS)
-    .setHelpUrl('https://docs.couchbase.com/server/current/manage/manage-security/manage-users-and-roles.html')
+    .setAuthType(cc.AuthType.NONE)
     .build();
 }
 
 /**
- * Returns true if the auth service has access.
- * 
- * @returns {boolean} True if the auth service has access.
- */
-function isAuthValid() {
-  const userProperties = PropertiesService.getUserProperties();
-  const path = userProperties.getProperty('dscc.path');
-  const username = userProperties.getProperty('dscc.username');
-  const password = userProperties.getProperty('dscc.password');
-  
-  return path && username && password;
-}
-
-/**
- * Sets the credentials.
- * 
- * @param {Request} request The set credentials request.
- * @returns {Object} An object with an errorCode.
- */
-function setCredentials(request) {
-  const creds = request.pathUserPass;
-  const path = creds.path;
-  const username = creds.username;
-  const password = creds.password;
-
-  // Directly store the provided credentials
-  const userProperties = PropertiesService.getUserProperties();
-  userProperties.setProperty('dscc.path', path);
-  userProperties.setProperty('dscc.username', username);
-  userProperties.setProperty('dscc.password', password);
-  
-  // Return success immediately
-  return {
-    errorCode: 'NONE'
-  };
-}
-
-/**
- * Resets the auth service.
- */
-function resetAuth() {
-  const userProperties = PropertiesService.getUserProperties();
-  userProperties.deleteProperty('dscc.path');
-  userProperties.deleteProperty('dscc.username');
-  userProperties.deleteProperty('dscc.password');
-}
-
-/**
  * Returns the user configurable options for the connector.
- *
- * @param {Object} request Config request parameters.
- * @returns {Object} Connector configuration to be displayed to the user.
  */
 function getConfig(request) {
   const cc = DataStudioApp.createCommunityConnector();
@@ -78,7 +29,7 @@ function getConfig(request) {
   config
     .newInfo()
     .setId('instructions')
-    .setText('Enter your Couchbase connection details and N1QL query. Use a publicly accessible URL (e.g., Capella or a public IP/domain), not localhost. The query should return a consistent schema.');
+    .setText('TESTING: Using hardcoded credentials. Enter Bucket, Scope, Collection, and Query.'); // Updated instructions
 
   config
     .newTextInput()
@@ -116,31 +67,17 @@ function getConfig(request) {
 }
 
 /**
- * Validates config and throws errors if necessary.
- *
- * @param {Object} configParams Config parameters.
- * @returns {Object} Updated Config parameters.
+ * Validates config and adds hardcoded credentials.
  */
 function validateConfig(configParams) {
   configParams = configParams || {};
   
-  // Get stored credentials
-  const userProperties = PropertiesService.getUserProperties();
-  const path = userProperties.getProperty('dscc.path');
-  const username = userProperties.getProperty('dscc.username');
-  const password = userProperties.getProperty('dscc.password');
+  // Add hardcoded credentials for use in fetchData
+  configParams.baseUrl = HARDCODED_URL;
+  configParams.username = HARDCODED_USERNAME;
+  configParams.password = HARDCODED_PASSWORD;
   
-  // Validate stored credentials
-  if (!path || !username || !password) {
-    throwUserError('Authentication credentials are missing. Please reconnect to Couchbase.');
-  }
-  
-  // Add credentials to configParams for use in fetchData
-  configParams.baseUrl = path;
-  configParams.username = username;
-  configParams.password = password;
-  
-  // Validate required config parameters
+  // Validate required config parameters (bucket and query still needed)
   if (!configParams.bucket) {
     throwUserError('Bucket name is required.');
   }
@@ -158,27 +95,20 @@ function validateConfig(configParams) {
     configParams.collection = '_default';
   }
   
-  // Check if the URL is for Capella and ensure it's using a secure connection
-  if (path.indexOf('cloud.couchbase.com') > -1) {
-    if (!path.startsWith('https://') && !path.startsWith('couchbases://')) {
-      throwUserError('Couchbase Capella requires a secure connection. URL must start with https:// or couchbases://');
-    }
-  }
+  // Removed credential checks and Capella URL check as URL is hardcoded
   
   return configParams;
 }
 
 /**
  * Returns the schema for the given request.
- *
- * @param {Object} request Schema request parameters.
- * @returns {Object} Schema for the given request.
  */
 function getSchema(request) {
+  // Pass the user config directly to validateConfig which adds hardcoded creds
   request.configParams = validateConfig(request.configParams);
   
   try {
-    const result = fetchData(request.configParams);
+    const result = fetchData(request.configParams); // Pass the modified configParams
     const schema = buildSchema(result);
     return { schema: schema };
   } catch (e) {
@@ -250,15 +180,13 @@ function buildSchema(result) {
 
 /**
  * Returns the tabular data for the given request.
- *
- * @param {Object} request Data request parameters.
- * @returns {Object} Contains the schema and data for the given request.
  */
 function getData(request) {
-  // request.configParams = validateConfig(request.configParams);
+  // Pass the user config directly to validateConfig which adds hardcoded creds
+  request.configParams = validateConfig(request.configParams);
   
   try {
-    const result = fetchData(request.configParams);
+    const result = fetchData(request.configParams); // Pass the modified configParams
     
     if (!result?.results?.length) {
       return {
@@ -286,86 +214,53 @@ function getData(request) {
 }
 
 /**
- * Fetches data from Couchbase using the provided configuration.
- *
- * @param {Object} configParams Config parameters.
- * @returns {Object} Query result.
+ * Fetches data from Couchbase using the provided configuration (with hardcoded credentials).
  */
 function fetchData(configParams) {
-  const username = configParams.username;
-  const password = configParams.password;
-  
-  if (!username || !password) {
-    throwUserError('Username and password are required.');
-  }
-  
-  const baseUrl = configParams.baseUrl;
+  // Use hardcoded credentials directly
+  const username = HARDCODED_USERNAME;
+  const password = HARDCODED_PASSWORD;
+  const baseUrl = HARDCODED_URL;
+
+  // Get other config params provided by the user
   const bucket = configParams.bucket;
   const scope = configParams.scope || '_default';
   const collection = configParams.collection || '_default';
   const query = configParams.query;
   const timeout = 30000; // Default timeout of 30 seconds
   
-  // Note: Google Apps Script doesn't support importing npm packages like the Couchbase SDK.
-  // In a normal Node.js environment, we would use code like:
-  //
-  // const cluster = await couchbase.connect(clusterConnStr, {
-  //   username: username,
-  //   password: password,
-  //   configProfile: 'wanDevelopment',
-  // })
-  // const bucket = cluster.bucket(bucketName)
-  // const collection = bucket.scope(scope).collection(collection)
-  // const result = await cluster.query(query)
-  //
-  // Instead, we're simulating this connection by making HTTP requests to the Query Service endpoint.
-  
   // Convert Couchbase connection string to HTTP endpoint for query service
   let apiBaseUrl = baseUrl;
-  
-  // Handle different URL formats (similar to how SDK would handle connection strings)
   if (apiBaseUrl.startsWith('couchbases://')) {
-    // Convert couchbases:// to https:// for API calls
     apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbases://'.length);
   } else if (apiBaseUrl.startsWith('couchbase://')) {
-    // Convert couchbase:// to http:// for API calls (assuming non-secure if couchbase://)
-    // Or force https:// if preferred: 'https://' + apiBaseUrl.substring('couchbase://'.length);
     apiBaseUrl = 'http://' + apiBaseUrl.substring('couchbase://'.length);
   }
-  
-  // Ensure the URL has a scheme (default to http if missing, unless it looks like Capella)
   if (!apiBaseUrl.startsWith('http://') && !apiBaseUrl.startsWith('https://')) {
+     // Simplified assumption: if it contains cloud.couchbase, use https, otherwise http
     if (apiBaseUrl.includes('cloud.couchbase.com')) {
-      // Default Capella to https
       apiBaseUrl = 'https://' + apiBaseUrl;
     } else {
-       // Default other connections to http (adjust if https is standard for your non-Capella setups)
       apiBaseUrl = 'http://' + apiBaseUrl;
     }
   }
   
-  // Construct the Couchbase query API URL (equivalent to cluster.query() in SDK)
-  // Default port for Query service is 8093 (HTTP) or 18093 (HTTPS)
-  // We need to ensure the correct port is present or added if common ports (80, 443) were omitted.
-  // This part requires careful handling based on expected user input.
-  // For simplicity here, we assume the user includes the port if it's not standard http/https.
   const queryUrl = apiBaseUrl.replace(/\/$/, '') + '/query/service';
   
-  // Build the query context based on bucket, scope, and collection
-  // Format: bucket.scope.collection for proper scoping
-  let queryContext = bucket;
-  if (scope !== '_default') {
-    queryContext += '.' + scope;
+  // Build the query context: default:`bucket`.`scope`
+  // Note: Backticks are important if names contain special characters.
+  let queryContext = `default:\`${bucket}\``; // Start with namespace and bucket
+  if (scope && scope !== '_default') { // Add scope if it's provided and not the default
+    queryContext += `.\`${scope}\``;
   }
-  if (collection !== '_default') {
-    queryContext += '.' + collection;
-  }
+  // Collection is typically specified within the N1QL statement (FROM clause),
+  // not usually needed in the query_context parameter itself.
   
   // Prepare the query payload
   const queryPayload = {
     statement: query,
     query_context: queryContext,
-    timeout: timeout + "ms" // Add timeout in milliseconds
+    timeout: timeout + "ms"
   };
   
   const options = {
@@ -376,8 +271,8 @@ function fetchData(configParams) {
       Authorization: 'Basic ' + Utilities.base64Encode(username + ':' + password)
     },
     muteHttpExceptions: true,
-    timeout: 5000, // 5 second timeout for the HTTP request
-    validateHttpsCertificates: false // Bypass certificate validation (for testing)
+    // Keep validateHttpsCertificates: false for now based on previous testing
+    validateHttpsCertificates: false 
   };
   
   try {
@@ -386,12 +281,17 @@ function fetchData(configParams) {
     const responseText = response.getContentText();
     
     if (responseCode !== 200) {
-      throwUserError('Error querying Couchbase: ' + responseText);
+      // Log detailed error
+      Logger.log('Error querying Couchbase (No-Auth Test). URL: %s, Code: %s, Response: %s', queryUrl, responseCode, responseText);
+      throwUserError('Error querying Couchbase (No-Auth Test): [Code: ' + responseCode + '] ' + responseText);
     }
     
+    Logger.log('fetchData successful (No-Auth Test) for URL: %s', queryUrl);
     return JSON.parse(responseText);
   } catch (e) {
-    throwUserError('Error connecting to Couchbase: ' + e.toString());
+    Logger.log('Error connecting to Couchbase during fetchData (No-Auth Test). URL: %s, Exception: %s', queryUrl, e.toString());
+    Logger.log('fetchData (No-Auth Test) Exception details: %s', e.stack);
+    throwUserError('Error connecting to Couchbase (No-Auth Test): ' + e.toString());
   }
 }
 
@@ -401,8 +301,9 @@ function fetchData(configParams) {
  * @param {string} message Error message.
  */
 function throwUserError(message) {
-  DataStudioApp.createCommunityConnector()
-    .newUserError()
+  // Ensure cc is defined if it wasn't globally
+  const cc = DataStudioApp.createCommunityConnector(); 
+  cc.newUserError()
     .setText(message)
     .throwException();
 }
@@ -414,4 +315,4 @@ function throwUserError(message) {
  */
 function isAdminUser() {
   return false;
-}
+} 
