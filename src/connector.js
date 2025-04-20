@@ -160,6 +160,128 @@ function resetAuth() {
 // ==========================================================================
 
 /**
+ * Fetches available buckets, scopes, and collections from Couchbase.
+ * Used to populate dropdowns in the config UI.
+ */
+function fetchCouchbaseMetadata() {
+  // Get stored credentials from PropertiesService
+  const userProperties = PropertiesService.getUserProperties();
+  const path = userProperties.getProperty('dscc.path');
+  const username = userProperties.getProperty('dscc.username');
+  const password = userProperties.getProperty('dscc.password');
+  
+  Logger.log('fetchCouchbaseMetadata: Starting fetch with path: %s, username: %s', path, username);
+  
+  if (!path || !username || !password) {
+    Logger.log('fetchCouchbaseMetadata: Authentication credentials missing from storage.');
+    return {
+      buckets: [],
+      scopesCollections: {}
+    };
+  }
+  
+  let apiBaseUrl = path;
+  // Force HTTPS and add port for Couchbase Capella query service
+  if (apiBaseUrl.startsWith('couchbases://')) {
+    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbases://'.length) + ':18093';
+  } else if (apiBaseUrl.startsWith('couchbase://')) {
+    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbase://'.length) + ':18093';
+  } else if (!apiBaseUrl.startsWith('https://')) {
+    apiBaseUrl = 'https://' + apiBaseUrl + ':18093';
+  }
+  
+  // Management API uses port 18091 for Capella, not 18093
+  const mgmtBaseUrl = apiBaseUrl.replace(':18093', ':18091');
+  
+  // Endpoint to fetch buckets
+  const bucketUrl = mgmtBaseUrl + '/pools/default/buckets';
+  
+  const options = {
+    method: 'get',
+    headers: {
+      Authorization: 'Basic ' + Utilities.base64Encode(username + ':' + password)
+    },
+    muteHttpExceptions: true,
+    validateHttpsCertificates: false
+  };
+  
+  try {
+    // Fetch buckets
+    Logger.log('fetchCouchbaseMetadata: Fetching buckets from %s', bucketUrl);
+    const response = UrlFetchApp.fetch(bucketUrl, options);
+    
+    if (response.getResponseCode() !== 200) {
+      Logger.log('Error fetching buckets. Code: %s, Response: %s', 
+                response.getResponseCode(), response.getContentText());
+      return {
+        buckets: [],
+        scopesCollections: {}
+      };
+    }
+    
+    let bucketNames = [];
+    try {
+      const buckets = JSON.parse(response.getContentText());
+      
+      if (Array.isArray(buckets)) {
+        bucketNames = buckets.map(bucket => bucket.name);
+        Logger.log('fetchCouchbaseMetadata: Found buckets: %s', bucketNames.join(', '));
+      } else {
+        Logger.log('fetchCouchbaseMetadata: Unexpected bucket response format');
+      }
+    } catch (e) {
+      Logger.log('Error parsing bucket response: %s', e.toString());
+      return {
+        buckets: [],
+        scopesCollections: {}
+      };
+    }
+    
+    // Fetch scopes and collections for each bucket
+    const scopesCollections = {};
+    
+    for (const bucketName of bucketNames) {
+      const scopesUrl = mgmtBaseUrl + '/pools/default/buckets/' + bucketName + '/scopes';
+      Logger.log('fetchCouchbaseMetadata: Fetching scopes for bucket %s from %s', bucketName, scopesUrl);
+      
+      try {
+        const scopesResponse = UrlFetchApp.fetch(scopesUrl, options);
+        
+        if (scopesResponse.getResponseCode() === 200) {
+          const scopesData = JSON.parse(scopesResponse.getContentText());
+          scopesCollections[bucketName] = {};
+          
+          if (scopesData.scopes && Array.isArray(scopesData.scopes)) {
+            for (const scope of scopesData.scopes) {
+              scopesCollections[bucketName][scope.name] = [];
+              
+              if (scope.collections && Array.isArray(scope.collections)) {
+                scopesCollections[bucketName][scope.name] = scope.collections.map(col => col.name);
+              }
+            }
+          }
+        }
+      } catch (e) {
+        Logger.log('Error fetching scopes for bucket %s: %s', bucketName, e.toString());
+      }
+    }
+    
+    return {
+      buckets: bucketNames,
+      scopesCollections: scopesCollections
+    };
+    
+  } catch (e) {
+    Logger.log('Error in fetchCouchbaseMetadata: %s', e.toString());
+    Logger.log('Exception details: %s', e.stack);
+    return {
+      buckets: [],
+      scopesCollections: {}
+    };
+  }
+}
+
+/**
  * Returns the user configurable options for the connector.
  */
 function getConfig(request) {
@@ -169,39 +291,112 @@ function getConfig(request) {
   config
     .newInfo()
     .setId('instructions')
-    .setText('Enter your Couchbase connection details and N1QL query. Use a publicly accessible URL (e.g., Capella or a public IP/domain), not localhost. The query should return a consistent schema.');
+    .setText('Select your Couchbase bucket, scope, and collection. The connector will generate a query to retrieve data.');
 
-  config
-    .newTextInput()
+  // Try to fetch buckets, scopes, and collections
+  const metadata = fetchCouchbaseMetadata();
+  Logger.log('getConfig: Metadata fetch returned buckets: %s', JSON.stringify(metadata.buckets));
+  
+  // Create bucket dropdown
+  const bucketSelect = config.newSelectSingle()
     .setId('bucket')
-    .setName('Bucket Name')
-    .setHelpText('The name of the Couchbase bucket to query')
-    .setPlaceholder('default')
+    .setName('Bucket')
+    .setHelpText('Select the Couchbase bucket to query')
     .setAllowOverride(true);
-
-  config
-    .newTextInput()
+  
+  // Add bucket options if available
+  if (metadata.buckets && metadata.buckets.length > 0) {
+    metadata.buckets.forEach(bucketName => {
+      bucketSelect.addOption(
+        config.newOptionBuilder().setLabel(bucketName).setValue(bucketName)
+      );
+    });
+  } else {
+    // Add a default placeholder option if no buckets found
+    bucketSelect.addOption(
+      config.newOptionBuilder().setLabel('Enter bucket name').setValue('')
+    );
+  }
+  
+  // Create scope dropdown
+  const scopeSelect = config.newSelectSingle()
     .setId('scope')
-    .setName('Scope (Optional)')
-    .setHelpText('The name of the scope within the bucket (e.g., inventory). Defaults to _default if blank.')
-    .setPlaceholder('_default')
+    .setName('Scope')
+    .setHelpText('Select the scope within the bucket')
     .setAllowOverride(true);
-
+  
+  // Add default scope option
+  scopeSelect.addOption(
+    config.newOptionBuilder().setLabel('_default').setValue('_default')
+  );
+  
+  // Add other scope options if available
+  if (request && request.configParams && request.configParams.bucket && 
+      metadata.scopesCollections && metadata.scopesCollections[request.configParams.bucket]) {
+    const scopes = Object.keys(metadata.scopesCollections[request.configParams.bucket]);
+    scopes.forEach(scopeName => {
+      if (scopeName !== '_default') {
+        scopeSelect.addOption(
+          config.newOptionBuilder().setLabel(scopeName).setValue(scopeName)
+        );
+      }
+    });
+  }
+  
+  // Create collection dropdown
+  const collectionSelect = config.newSelectSingle()
+    .setId('collection')
+    .setName('Collection')
+    .setHelpText('Select the collection within the scope')
+    .setAllowOverride(true);
+  
+  // Add default collection option
+  collectionSelect.addOption(
+    config.newOptionBuilder().setLabel('_default').setValue('_default')
+  );
+  
+  // Add other collection options if available
+  if (request && request.configParams && request.configParams.bucket && 
+      request.configParams.scope && metadata.scopesCollections && 
+      metadata.scopesCollections[request.configParams.bucket] && 
+      metadata.scopesCollections[request.configParams.bucket][request.configParams.scope]) {
+    const collections = metadata.scopesCollections[request.configParams.bucket][request.configParams.scope];
+    collections.forEach(collectionName => {
+      if (collectionName !== '_default') {
+        collectionSelect.addOption(
+          config.newOptionBuilder().setLabel(collectionName).setValue(collectionName)
+        );
+      }
+    });
+  }
+  
+  // Add result limit field
   config
     .newTextInput()
-    .setId('collection')
-    .setName('Collection (Optional)')
-    .setHelpText('The name of the collection within the scope (e.g., airport). Defaults to _default if blank.')
-    .setPlaceholder('_default')
+    .setId('limit')
+    .setName('Result Limit')
+    .setHelpText('Maximum number of records to return (default: 1000)')
+    .setPlaceholder('1000')
     .setAllowOverride(true);
-
-  config
-    .newTextArea()
-    .setId('query')
-    .setName('N1QL Query')
-    .setHelpText('Enter a valid N1QL query (e.g., SELECT * FROM `travel-sample`.inventory.airport LIMIT 100). The query should return a consistent schema.')
-    .setPlaceholder('SELECT * FROM `travel-sample`.inventory.airport LIMIT 100')
+  
+  // Add custom query checkbox
+  const useCustomQuery = config
+    .newCheckbox()
+    .setId('useCustomQuery')
+    .setName('Use Custom Query')
+    .setHelpText('Check this box to write your own N1QL query instead of using the generated one')
     .setAllowOverride(true);
+  
+  // Only show query textarea if custom query is checked
+  if (request && request.configParams && request.configParams.useCustomQuery === 'true') {
+    config
+      .newTextArea()
+      .setId('query')
+      .setName('Custom N1QL Query')
+      .setHelpText('Enter a valid N1QL query (e.g., SELECT * FROM `travel-sample`.inventory.airport LIMIT 100)')
+      .setPlaceholder('SELECT * FROM `travel-sample`.inventory.airport LIMIT 100')
+      .setAllowOverride(true);
+  }
 
   return config.build();
 }
@@ -232,9 +427,6 @@ function validateConfig(configParams) {
   if (!configParams.bucket) {
     throwUserError('Bucket name is required.');
   }
-  if (!configParams.query) {
-    throwUserError('N1QL query is required.');
-  }
   
   // Set default values for scope and collection if not provided
   if (!configParams.scope) {
@@ -242,6 +434,34 @@ function validateConfig(configParams) {
   }
   if (!configParams.collection) {
     configParams.collection = '_default';
+  }
+  
+  // Set default limit if not provided
+  if (!configParams.limit) {
+    configParams.limit = 1000;
+  } else {
+    // Ensure limit is a number
+    configParams.limit = parseInt(configParams.limit, 10);
+    if (isNaN(configParams.limit) || configParams.limit <= 0) {
+      configParams.limit = 1000;
+    }
+  }
+  
+  // If useCustomQuery is checked, verify that query is provided
+  if (configParams.useCustomQuery === 'true' && !configParams.query) {
+    throwUserError('Custom query is required when "Use Custom Query" is checked.');
+  }
+  
+  // Generate query automatically if custom query not being used
+  if (configParams.useCustomQuery !== 'true') {
+    // Format bucket, scope, and collection with backticks for N1QL
+    const formattedBucket = '`' + configParams.bucket + '`';
+    const formattedScope = '`' + configParams.scope + '`';
+    const formattedCollection = '`' + configParams.collection + '`';
+    
+    // Build the query: SELECT * FROM `bucket`.`scope`.`collection` LIMIT X
+    configParams.query = 'SELECT * FROM ' + formattedBucket + '.' + formattedScope + '.' + formattedCollection + ' LIMIT ' + configParams.limit;
+    Logger.log('Generated query: %s', configParams.query);
   }
   
   // Optional: Check Capella URL format
@@ -381,7 +601,7 @@ function fetchData(configParams) {
   // Get credentials and URL from configParams (populated by validateConfig)
   const username = configParams.username;
   const password = configParams.password;
-  const baseUrl = configParams.baseUrl; // Use the baseUrl from configParams
+  const baseUrl = configParams.baseUrl;
   
   if (!username || !password || !baseUrl) {
      Logger.log('fetchData Error: Missing baseUrl, username, or password in configParams.');
@@ -390,11 +610,11 @@ function fetchData(configParams) {
 
   const bucket = configParams.bucket;
   const scope = configParams.scope || '_default';
-  const query = configParams.query;
+  const query = configParams.query; // This will be the auto-generated query if useCustomQuery is not true
   const timeout = 30000; 
 
   let apiBaseUrl = baseUrl;
-  // Force HTTPS and remove common query/analytics ports to target standard 443
+  // Force HTTPS and add port for Couchbase Capella
   if (apiBaseUrl.startsWith('couchbases://')) {
     apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbases://'.length) + ':18093';
   } else if (apiBaseUrl.startsWith('couchbase://')) {
@@ -428,6 +648,7 @@ function fetchData(configParams) {
 
   try {
     Logger.log('fetchData: Sending query to %s for context %s', queryUrl, queryContext);
+    Logger.log('fetchData: Query: %s', query);
     const response = UrlFetchApp.fetch(queryUrl, options);
     const responseCode = response.getResponseCode();
     const responseText = response.getContentText();
