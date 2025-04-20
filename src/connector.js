@@ -32,17 +32,11 @@ function validateCredentials(path, username, password) {
     return false; 
   }
 
-  let apiBaseUrl = path;
-  // Force HTTPS and remove common query/analytics ports to target standard 443
-  if (apiBaseUrl.startsWith('couchbases://')) {
-    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbases://'.length) + ':18093';
-  } else if (apiBaseUrl.startsWith('couchbase://')) {
-    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbase://'.length) + ':18093'; // Force HTTPS with port
-  } else if (!apiBaseUrl.startsWith('https://')) {
-    apiBaseUrl = 'https://' + apiBaseUrl + ':18093';
-  }
-  
-  const queryUrl = apiBaseUrl.replace(/\/$/, '') + '/query/service';
+  // Construct the base API URL using the helper function
+  const apiBaseUrl = constructApiUrl(path, 18093); // Default query port is 18093
+  Logger.log('validateCredentials: Constructed API Base URL: %s', apiBaseUrl);
+
+  const queryUrl = apiBaseUrl + '/query/service'; // Append the service path
   // Log the final URL being used for the fetch call
   Logger.log('validateCredentials constructed queryUrl: %s', queryUrl);
   Logger.log('Validation query URL (using port 18093): %s', queryUrl);
@@ -117,7 +111,7 @@ function setCredentials(request) {
   const username = creds.username;
   const password = creds.password;
 
-  Logger.log('Received path: %s, username: %s, password: %s', path, username, '********');
+  Logger.log('Received path: %s, username: %s, password: %s', path, username, '*'.repeat(password.length));
 
   try {
     const userProperties = PropertiesService.getUserProperties();
@@ -180,20 +174,12 @@ function fetchCouchbaseMetadata() {
     };
   }
   
-  let apiBaseUrl = path;
-  // Force HTTPS and add port for Couchbase Capella query service
-  if (apiBaseUrl.startsWith('couchbases://')) {
-    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbases://'.length) + ':18093';
-  } else if (apiBaseUrl.startsWith('couchbase://')) {
-    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbase://'.length) + ':18093';
-  } else if (!apiBaseUrl.startsWith('https://')) {
-    apiBaseUrl = 'https://' + apiBaseUrl + ':18093';
-  }
-  
-  // Management API uses port 18091 for Capella, not 18093
-  const mgmtBaseUrl = apiBaseUrl.replace(':18093', ':18091');
-  
-  // Endpoint to fetch buckets
+  // Construct base URLs using the helper function
+  const queryBaseUrl = constructApiUrl(path, 18093); // Default query port
+  const mgmtBaseUrl = constructApiUrl(path, 18091);  // Default management port
+  Logger.log('fetchCouchbaseMetadata: Query Base URL: %s, Mgmt Base URL: %s', queryBaseUrl, mgmtBaseUrl);
+
+  // Endpoint to fetch buckets uses the management URL
   const bucketUrl = mgmtBaseUrl + '/pools/default/buckets';
   
   const options = {
@@ -237,32 +223,141 @@ function fetchCouchbaseMetadata() {
       };
     }
     
-    // Fetch scopes and collections for each bucket
-    const scopesCollections = {};
+    // Use query service URL to get all keyspaces (buckets, scopes, collections)
+    const queryUrl = queryBaseUrl + '/query/service';
     
-    for (const bucketName of bucketNames) {
-      const scopesUrl = mgmtBaseUrl + '/pools/default/buckets/' + bucketName + '/scopes';
-      Logger.log('fetchCouchbaseMetadata: Fetching scopes for bucket %s from %s', bucketName, scopesUrl);
+    // This query will return all keyspaces (namespaces)
+    const keyspaceQueryPayload = {
+      statement: "SELECT RAW CONCAT(CONCAT(CONCAT(namespace_id, '.'), bucket_id), '.' || ks.scope_id || '.' || ks.id) FROM system:keyspaces ks",
+      timeout: "10000ms"
+    };
+    
+    const queryOptions = {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(keyspaceQueryPayload),
+      headers: {
+        Authorization: 'Basic ' + Utilities.base64Encode(username + ':' + password)
+      },
+      muteHttpExceptions: true,
+      validateHttpsCertificates: false
+    };
+    
+    Logger.log('fetchCouchbaseMetadata: Querying keyspaces: %s', keyspaceQueryPayload.statement);
+    
+    // Initialize the scopesCollections structure with at least _default for each bucket
+    const scopesCollections = {};
+    bucketNames.forEach(bucketName => {
+      scopesCollections[bucketName] = {
+        '_default': ['_default']
+      };
+    });
+    
+    try {
+      const keyspaceResponse = UrlFetchApp.fetch(queryUrl, queryOptions);
+      
+      if (keyspaceResponse.getResponseCode() === 200) {
+        const keyspaceData = JSON.parse(keyspaceResponse.getContentText());
+        Logger.log('fetchCouchbaseMetadata: Keyspace response: %s', keyspaceResponse.getContentText());
+        
+        if (keyspaceData.results && Array.isArray(keyspaceData.results)) {
+          // Process each keyspace result
+          keyspaceData.results.forEach(keyspace => {
+            // Ensure keyspace is not null before processing
+            if (keyspace) { 
+              try {
+                // Split the keyspace string to extract parts: namespace.bucket.scope.collection
+                const parts = keyspace.split('.');
+                if (parts.length === 4) {
+                  const namespace = parts[0];
+                  const bucket = parts[1];
+                  const scope = parts[2];
+                  const collection = parts[3];
+                  
+                  // Only process for known buckets
+                  if (bucketNames.includes(bucket)) {
+                    // Initialize scope if not exists
+                    if (!scopesCollections[bucket][scope]) {
+                      scopesCollections[bucket][scope] = [];
+                    }
+                    
+                    // Add collection if not already added
+                    if (!scopesCollections[bucket][scope].includes(collection)) {
+                      scopesCollections[bucket][scope].push(collection);
+                      Logger.log('fetchCouchbaseMetadata: Added %s.%s.%s', bucket, scope, collection);
+                    }
+                  }
+                }
+              } catch (e) {
+                Logger.log('Error processing keyspace %s: %s', keyspace, e.toString());
+              }
+            } else {
+              Logger.log('fetchCouchbaseMetadata: Skipping null keyspace entry.');
+            }
+          });
+        }
+      } else {
+        Logger.log('Error fetching keyspaces. Code: %s, Response: %s', 
+                  keyspaceResponse.getResponseCode(), keyspaceResponse.getContentText());
+      }
+    } catch (e) {
+      Logger.log('Error in keyspace query: %s', e.toString());
+    }
+    
+    // If nothing was found with the keyspace query, try another approach with system:all_keyspaces
+    if (Object.keys(scopesCollections).every(bucket => 
+        Object.keys(scopesCollections[bucket]).length <= 1 && 
+        Object.keys(scopesCollections[bucket])[0] === '_default')) {
+      
+      Logger.log('fetchCouchbaseMetadata: First keyspace query didn\'t find scopes/collections, trying alternate query');
+      
+      const alternateQueryPayload = {
+        statement: "SELECT * FROM system:all_keyspaces",
+        timeout: "10000ms"
+      };
       
       try {
-        const scopesResponse = UrlFetchApp.fetch(scopesUrl, options);
+        const alternateResponse = UrlFetchApp.fetch(queryUrl, {
+          method: 'post',
+          contentType: 'application/json',
+          payload: JSON.stringify(alternateQueryPayload),
+          headers: {
+            Authorization: 'Basic ' + Utilities.base64Encode(username + ':' + password)
+          },
+          muteHttpExceptions: true,
+          validateHttpsCertificates: false
+        });
         
-        if (scopesResponse.getResponseCode() === 200) {
-          const scopesData = JSON.parse(scopesResponse.getContentText());
-          scopesCollections[bucketName] = {};
+        if (alternateResponse.getResponseCode() === 200) {
+          const alternateData = JSON.parse(alternateResponse.getContentText());
+          Logger.log('fetchCouchbaseMetadata: Alternate keyspace response received');
           
-          if (scopesData.scopes && Array.isArray(scopesData.scopes)) {
-            for (const scope of scopesData.scopes) {
-              scopesCollections[bucketName][scope.name] = [];
-              
-              if (scope.collections && Array.isArray(scope.collections)) {
-                scopesCollections[bucketName][scope.name] = scope.collections.map(col => col.name);
+          if (alternateData.results && Array.isArray(alternateData.results)) {
+            alternateData.results.forEach(item => {
+              if (item.all_keyspaces) {
+                const keyspace = item.all_keyspaces;
+                
+                if (keyspace.bucket && bucketNames.includes(keyspace.bucket) && 
+                    keyspace.scope && keyspace.name) {
+                  
+                  // Initialize scope if not exists
+                  if (!scopesCollections[keyspace.bucket][keyspace.scope]) {
+                    scopesCollections[keyspace.bucket][keyspace.scope] = [];
+                  }
+                  
+                  // Add collection if not already added
+                  if (!scopesCollections[keyspace.bucket][keyspace.scope].includes(keyspace.name)) {
+                    scopesCollections[keyspace.bucket][keyspace.scope].push(keyspace.name);
+                    Logger.log('fetchCouchbaseMetadata: Added from alternate: %s.%s.%s', 
+                              keyspace.bucket, keyspace.scope, keyspace.name);
+                  }
+                }
               }
-            }
+            });
           }
         }
       } catch (e) {
-        Logger.log('Error fetching scopes for bucket %s: %s', bucketName, e.toString());
+        Logger.log('Error in alternate keyspace query: %s', e.toString());
       }
     }
     
@@ -291,91 +386,52 @@ function getConfig(request) {
   config
     .newInfo()
     .setId('instructions')
-    .setText('Select your Couchbase bucket, scope, and collection. The connector will generate a query to retrieve data.');
+    .setText('Select one or more collections from your Couchbase database. The connector will generate queries to retrieve data.');
 
-  // Try to fetch buckets, scopes, and collections
+  // Fetch buckets, scopes, and collections
   const metadata = fetchCouchbaseMetadata();
   Logger.log('getConfig: Metadata fetch returned buckets: %s', JSON.stringify(metadata.buckets));
   
-  // Create bucket dropdown
-  const bucketSelect = config.newSelectSingle()
-    .setId('bucket')
-    .setName('Bucket')
-    .setHelpText('Select the Couchbase bucket to query')
+  // Create a multi-select for collections with fully qualified paths
+  const collectionsSelect = config.newSelectMultiple()
+    .setId('collections')
+    .setName('Couchbase Collections')
+    .setHelpText('Select one or more collections to query data from')
     .setAllowOverride(true);
   
-  // Add bucket options if available
-  if (metadata.buckets && metadata.buckets.length > 0) {
-    metadata.buckets.forEach(bucketName => {
-      bucketSelect.addOption(
-        config.newOptionBuilder().setLabel(bucketName).setValue(bucketName)
-      );
+  // Build a list of all fully qualified collection paths
+  const collectionPaths = [];
+  
+  // Loop through all buckets, scopes, collections to build paths
+  Object.keys(metadata.scopesCollections).forEach(bucket => {
+    Object.keys(metadata.scopesCollections[bucket]).forEach(scope => {
+      metadata.scopesCollections[bucket][scope].forEach(collection => {
+        // Create a fully qualified path: bucket.scope.collection
+        const path = `${bucket}.${scope}.${collection}`;
+        const label = `${bucket} > ${scope} > ${collection}`;
+        collectionPaths.push({ path: path, label: label });
+        
+        Logger.log('getConfig: Added collection path: %s', path);
+      });
     });
-  } else {
-    // Add a default placeholder option if no buckets found
-    bucketSelect.addOption(
-      config.newOptionBuilder().setLabel('Enter bucket name').setValue('')
+  });
+  
+  // Sort collection paths alphabetically
+  collectionPaths.sort((a, b) => a.label.localeCompare(b.label));
+  
+  // Add options for each collection path
+  collectionPaths.forEach(item => {
+    collectionsSelect.addOption(
+      config.newOptionBuilder().setLabel(item.label).setValue(item.path)
     );
-  }
-  
-  // Create scope dropdown
-  const scopeSelect = config.newSelectSingle()
-    .setId('scope')
-    .setName('Scope')
-    .setHelpText('Select the scope within the bucket')
-    .setAllowOverride(true);
-  
-  // Add default scope option
-  scopeSelect.addOption(
-    config.newOptionBuilder().setLabel('_default').setValue('_default')
-  );
-  
-  // Add other scope options if available
-  if (request && request.configParams && request.configParams.bucket && 
-      metadata.scopesCollections && metadata.scopesCollections[request.configParams.bucket]) {
-    const scopes = Object.keys(metadata.scopesCollections[request.configParams.bucket]);
-    scopes.forEach(scopeName => {
-      if (scopeName !== '_default') {
-        scopeSelect.addOption(
-          config.newOptionBuilder().setLabel(scopeName).setValue(scopeName)
-        );
-      }
-    });
-  }
-  
-  // Create collection dropdown
-  const collectionSelect = config.newSelectSingle()
-    .setId('collection')
-    .setName('Collection')
-    .setHelpText('Select the collection within the scope')
-    .setAllowOverride(true);
-  
-  // Add default collection option
-  collectionSelect.addOption(
-    config.newOptionBuilder().setLabel('_default').setValue('_default')
-  );
-  
-  // Add other collection options if available
-  if (request && request.configParams && request.configParams.bucket && 
-      request.configParams.scope && metadata.scopesCollections && 
-      metadata.scopesCollections[request.configParams.bucket] && 
-      metadata.scopesCollections[request.configParams.bucket][request.configParams.scope]) {
-    const collections = metadata.scopesCollections[request.configParams.bucket][request.configParams.scope];
-    collections.forEach(collectionName => {
-      if (collectionName !== '_default') {
-        collectionSelect.addOption(
-          config.newOptionBuilder().setLabel(collectionName).setValue(collectionName)
-        );
-      }
-    });
-  }
+  });
   
   // Add result limit field
   config
     .newTextInput()
     .setId('limit')
     .setName('Result Limit')
-    .setHelpText('Maximum number of records to return (default: 1000)')
+    .setHelpText('Maximum number of records to return per collection (default: 1000)')
     .setPlaceholder('1000')
     .setAllowOverride(true);
   
@@ -384,7 +440,7 @@ function getConfig(request) {
     .newCheckbox()
     .setId('useCustomQuery')
     .setName('Use Custom Query')
-    .setHelpText('Check this box to write your own N1QL query instead of using the generated one')
+    .setHelpText('Check this box to write your own N1QL query instead of using the generated ones')
     .setAllowOverride(true);
   
   // Only show query textarea if custom query is checked
@@ -393,8 +449,8 @@ function getConfig(request) {
       .newTextArea()
       .setId('query')
       .setName('Custom N1QL Query')
-      .setHelpText('Enter a valid N1QL query (e.g., SELECT * FROM `travel-sample`.inventory.airport LIMIT 100)')
-      .setPlaceholder('SELECT * FROM `travel-sample`.inventory.airport LIMIT 100')
+      .setHelpText('Enter a valid N1QL query (e.g., SELECT * FROM bucket.scope.collection LIMIT 100)')
+      .setPlaceholder('SELECT * FROM bucket.scope.collection LIMIT 100')
       .setAllowOverride(true);
   }
 
@@ -424,16 +480,13 @@ function validateConfig(configParams) {
   configParams.password = password;
   
   // Validate required connector-specific config parameters
-  if (!configParams.bucket) {
-    throwUserError('Bucket name is required.');
+  if (!configParams.collections) {
+    throwUserError('At least one collection must be selected.');
   }
   
-  // Set default values for scope and collection if not provided
-  if (!configParams.scope) {
-    configParams.scope = '_default';
-  }
-  if (!configParams.collection) {
-    configParams.collection = '_default';
+  // Convert collections string to array if it's a string
+  if (typeof configParams.collections === 'string') {
+    configParams.collections = configParams.collections.split(',');
   }
   
   // Set default limit if not provided
@@ -454,14 +507,8 @@ function validateConfig(configParams) {
   
   // Generate query automatically if custom query not being used
   if (configParams.useCustomQuery !== 'true') {
-    // Format bucket, scope, and collection with backticks for N1QL
-    const formattedBucket = '`' + configParams.bucket + '`';
-    const formattedScope = '`' + configParams.scope + '`';
-    const formattedCollection = '`' + configParams.collection + '`';
-    
-    // Build the query: SELECT * FROM `bucket`.`scope`.`collection` LIMIT X
-    configParams.query = 'SELECT * FROM ' + formattedBucket + '.' + formattedScope + '.' + formattedCollection + ' LIMIT ' + configParams.limit;
-    Logger.log('Generated query: %s', configParams.query);
+    // We'll generate the query in fetchData for each collection
+    Logger.log('validateConfig: Will generate queries for collections: %s', configParams.collections.join(', '));
   }
   
   // Optional: Check Capella URL format
@@ -469,7 +516,7 @@ function validateConfig(configParams) {
       Logger.log('validateConfig Warning: Capella URL found without secure prefix: %s', path);
   }
   
-  Logger.log('validateConfig successful for bucket: %s', configParams.bucket);
+  Logger.log('validateConfig successful for collections: %s', configParams.collections.join(', '));
   return configParams;
 }
 
@@ -484,9 +531,36 @@ function getSchema(request) {
   request.configParams = validateConfig(request.configParams);
   
   try {
-    const result = fetchData(request.configParams);
-    const schema = buildSchema(result);
-    return { schema: schema };
+    // If using custom query, fetch schema from that query
+    if (request.configParams.useCustomQuery === 'true') {
+      const result = fetchData(request.configParams);
+      const schema = buildSchema(result);
+      return { schema: schema };
+    } else {
+      // Get the first collection and use it for schema
+      const collection = request.configParams.collections[0];
+      const [bucket, scope, collectionName] = collection.split('.');
+      
+      // Set the first collection for schema retrieval using object spread
+      const schemaParams = {
+        ...request.configParams,
+        bucket: bucket,
+        scope: scope,
+        collection: collectionName
+      };
+      
+      // Generate a query for this collection
+      const formattedBucket = '`' + bucket + '`';
+      const formattedScope = '`' + scope + '`';
+      const formattedCollection = '`' + collectionName + '`';
+      schemaParams.query = 'SELECT * FROM ' + formattedBucket + '.' + formattedScope + '.' + formattedCollection + ' LIMIT ' + schemaParams.limit;
+      
+      Logger.log('getSchema: Using collection %s for schema with query: %s', collection, schemaParams.query);
+      
+      const result = fetchData(schemaParams);
+      const schema = buildSchema(result);
+      return { schema: schema };
+    }
   } catch (e) {
     Logger.log('Error during getSchema: %s', e.toString());
     Logger.log('getSchema Exception details: %s', e.stack);
@@ -506,27 +580,81 @@ function buildSchema(result) {
   }
   
   const schema = [];
-  const firstRow = result.results[0];
-
-  let dataObject = firstRow;
-  const keys = Object.keys(firstRow);
-  if (keys.length === 1 && typeof firstRow[keys[0]] === 'object' && firstRow[keys[0]] !== null) {
-    dataObject = firstRow[keys[0]];
+  Logger.log('buildSchema: Analyzing first result row to determine schema');
+  
+  // Try to find the most complete row in the first few results for better schema detection
+  const rowsToCheck = Math.min(result.results.length, 10);
+  let mostCompleteRow = result.results[0];
+  let maxProperties = 0;
+  
+  for (let i = 0; i < rowsToCheck; i++) {
+    const row = result.results[i];
+    let propertyCount = 0;
+    
+    // Count properties in this row (including nested ones)
+    function countProperties(obj) {
+      if (typeof obj !== 'object' || obj === null) return 0;
+      let count = 0;
+      for (const key in obj) {
+        count++;
+        if (typeof obj[key] === 'object' && obj[key] !== null) {
+          // Don't count nested objects as additional properties
+          // Just count the parent key
+        }
+      }
+      return count;
+    }
+    
+    // Check if data is nested under a key
+    const keys = Object.keys(row);
+    if (keys.length === 1 && typeof row[keys[0]] === 'object' && row[keys[0]] !== null) {
+      propertyCount = countProperties(row[keys[0]]);
+    } else {
+      propertyCount = countProperties(row);
+    }
+    
+    if (propertyCount > maxProperties) {
+      mostCompleteRow = row;
+      maxProperties = propertyCount;
+    }
+  }
+  
+  // Use the most complete row to build schema
+  let dataObject = mostCompleteRow;
+  const keys = Object.keys(mostCompleteRow);
+  if (keys.length === 1 && typeof mostCompleteRow[keys[0]] === 'object' && mostCompleteRow[keys[0]] !== null) {
+    dataObject = mostCompleteRow[keys[0]];
     Logger.log('buildSchema: Data appears nested under key: %s', keys[0]);
   } else {
     Logger.log('buildSchema: Data appears to be at the top level.');
   }
 
-  Object.keys(dataObject).forEach(function(key) {
-    const value = dataObject[key];
-    const type = typeof value;
-    let dataType = 'STRING'; 
+  // Function to determine field type and add it to schema
+  function addFieldToSchema(key, value, parentKey = '') {
+    const fieldName = parentKey ? parentKey + '.' + key : key;
+    
+    if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
+      // For nested objects, flatten them with dot notation
+      Logger.log('buildSchema: Found nested object for field %s', fieldName);
+      for (const nestedKey in value) {
+        addFieldToSchema(nestedKey, value[nestedKey], fieldName);
+      }
+      return;
+    }
+    
+    // Skip arrays for now
+    if (Array.isArray(value)) {
+      Logger.log('buildSchema: Skipping array field %s', fieldName);
+      return;
+    }
+    
+    let dataType = 'STRING';
     let semantics = { conceptType: 'DIMENSION' };
 
-    if (type === 'number') {
+    if (typeof value === 'number') {
       dataType = 'NUMBER';
       semantics = { conceptType: 'METRIC', isReaggregatable: true };
-    } else if (type === 'boolean') {
+    } else if (typeof value === 'boolean') {
       dataType = 'BOOLEAN';
       semantics = { conceptType: 'DIMENSION' };
     } else if (value instanceof Date || (typeof value === 'string' && value.length > 10 && !isNaN(Date.parse(value)))) {
@@ -534,19 +662,28 @@ function buildSchema(result) {
       semantics = { conceptType: 'DIMENSION', semanticGroup: 'DATETIME' };
     }
 
-    schema.push({
-      name: key,
-      label: key,
-      dataType: dataType,
-      semantics: semantics
-    });
-  });
+    // Check if this field already exists
+    if (!schema.some(field => field.name === fieldName)) {
+      schema.push({
+        name: fieldName,
+        label: fieldName,
+        dataType: dataType,
+        semantics: semantics
+      });
+      Logger.log('buildSchema: Added field %s with type %s', fieldName, dataType);
+    }
+  }
+
+  // Process all top-level fields
+  for (const key in dataObject) {
+    addFieldToSchema(key, dataObject[key]);
+  }
 
   if (schema.length === 0) {
     throw new Error('Could not determine any fields from the first row of results. Check query and data structure.');
   }
   
-  Logger.log('buildSchema successful. Detected fields: %s', schema.map(f => f.name).join(', '));
+  Logger.log('buildSchema successful. Detected %s fields: %s', schema.length, schema.map(f => f.name).join(', '));
   return schema;
 }
 
@@ -557,36 +694,91 @@ function getData(request) {
   request.configParams = validateConfig(request.configParams);
   
   try {
-    const result = fetchData(request.configParams);
-    
-    if (!result?.results?.length) {
-      const requestedFieldsSchema = getFieldsFromRequest(request);
-      Logger.log('getData: Query returned no results. Returning empty rows with schema.');
+    // If using custom query, return data from that query
+    if (request.configParams.useCustomQuery === 'true') {
+      const result = fetchData(request.configParams);
+      
+      if (!result?.results?.length) {
+        const requestedFieldsSchema = getFieldsFromRequest(request);
+        Logger.log('getData: Query returned no results. Returning empty rows with schema.');
+        return {
+          schema: requestedFieldsSchema,
+          rows: []
+        };
+      }
+      
+      const schema = buildSchema(result);
+      const requestedFieldIds = request.fields.map(field => field.name);
+      const requestedFields = schema.filter(field => requestedFieldIds.indexOf(field.name) > -1);
+
+      const rows = result.results.map(row => {
+        let dataObject = row;
+        const keys = Object.keys(row);
+        if (keys.length === 1 && typeof row[keys[0]] === 'object' && row[keys[0]] !== null) {
+           dataObject = row[keys[0]];
+        }
+        const values = requestedFieldIds.map(fieldId => dataObject[fieldId] !== undefined ? dataObject[fieldId] : null);
+        return { values };
+      });
+      
+      Logger.log('getData successful. Returning %s rows.', rows.length);
       return {
-        schema: requestedFieldsSchema,
-        rows: []
+        schema: requestedFields,
+        rows: rows
+      };
+    } else {
+      // Get the first collection for now (in the future we could union multiple collections)
+      // Currently Looker Studio doesn't handle multiple schemas well, so use only the first selected collection
+      const collection = request.configParams.collections[0];
+      const [bucket, scope, collectionName] = collection.split('.');
+      
+      // Set the collection for data retrieval using object spread
+      const dataParams = {
+        ...request.configParams,
+        bucket: bucket,
+        scope: scope,
+        collection: collectionName
+      };
+      
+      // Generate a query for this collection
+      const formattedBucket = '`' + bucket + '`';
+      const formattedScope = '`' + scope + '`';
+      const formattedCollection = '`' + collectionName + '`';
+      dataParams.query = 'SELECT * FROM ' + formattedBucket + '.' + formattedScope + '.' + formattedCollection + ' LIMIT ' + dataParams.limit;
+      
+      Logger.log('getData: Using collection %s for data with query: %s', collection, dataParams.query);
+      
+      const result = fetchData(dataParams);
+      
+      if (!result?.results?.length) {
+        const requestedFieldsSchema = getFieldsFromRequest(request);
+        Logger.log('getData: Query returned no results. Returning empty rows with schema.');
+        return {
+          schema: requestedFieldsSchema,
+          rows: []
+        };
+      }
+      
+      const schema = buildSchema(result);
+      const requestedFieldIds = request.fields.map(field => field.name);
+      const requestedFields = schema.filter(field => requestedFieldIds.indexOf(field.name) > -1);
+
+      const rows = result.results.map(row => {
+        let dataObject = row;
+        const keys = Object.keys(row);
+        if (keys.length === 1 && typeof row[keys[0]] === 'object' && row[keys[0]] !== null) {
+           dataObject = row[keys[0]];
+        }
+        const values = requestedFieldIds.map(fieldId => dataObject[fieldId] !== undefined ? dataObject[fieldId] : null);
+        return { values };
+      });
+      
+      Logger.log('getData successful. Returning %s rows.', rows.length);
+      return {
+        schema: requestedFields,
+        rows: rows
       };
     }
-    
-    const schema = buildSchema(result);
-    const requestedFieldIds = request.fields.map(field => field.name);
-    const requestedFields = schema.filter(field => requestedFieldIds.indexOf(field.name) > -1);
-
-    const rows = result.results.map(row => {
-      let dataObject = row;
-      const keys = Object.keys(row);
-      if (keys.length === 1 && typeof row[keys[0]] === 'object' && row[keys[0]] !== null) {
-         dataObject = row[keys[0]];
-      }
-      const values = requestedFieldIds.map(fieldId => dataObject[fieldId] !== undefined ? dataObject[fieldId] : null);
-      return { values };
-    });
-    
-    Logger.log('getData successful. Returning %s rows.', rows.length);
-    return {
-      schema: requestedFields,
-      rows: rows
-    };
   } catch (e) {
     Logger.log('Error during getData: %s', e.toString());
     Logger.log('getData Exception details: %s', e.stack);
@@ -613,17 +805,11 @@ function fetchData(configParams) {
   const query = configParams.query; // This will be the auto-generated query if useCustomQuery is not true
   const timeout = 30000; 
 
-  let apiBaseUrl = baseUrl;
-  // Force HTTPS and add port for Couchbase Capella
-  if (apiBaseUrl.startsWith('couchbases://')) {
-    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbases://'.length) + ':18093';
-  } else if (apiBaseUrl.startsWith('couchbase://')) {
-    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbase://'.length) + ':18093'; // Force HTTPS with port
-  } else if (!apiBaseUrl.startsWith('https://')) {
-    apiBaseUrl = 'https://' + apiBaseUrl + ':18093';
-  }
+  // Construct the base API URL using the helper function
+  const apiBaseUrl = constructApiUrl(baseUrl, 18093); // Default query port is 18093
+  Logger.log('fetchData: Constructed API Base URL: %s', apiBaseUrl);
   
-  const queryUrl = apiBaseUrl.replace(/\/$/, '') + '/query/service';
+  const queryUrl = apiBaseUrl + '/query/service'; // Append the service path
   let queryContext = `default:\`${bucket}\``;
   if (scope && scope !== '_default') {
     queryContext += `.\`${scope}\``;
@@ -678,6 +864,37 @@ function fetchData(configParams) {
 // ==========================================================================
 
 /**
+ * Constructs a full API URL from a user-provided path, ensuring HTTPS
+ * and adding a default port if none is specified.
+ */
+function constructApiUrl(path, defaultPort) {
+  let hostAndPort = path;
+
+  // Standardize scheme and strip it
+  if (hostAndPort.startsWith('couchbases://')) {
+    hostAndPort = hostAndPort.substring('couchbases://'.length);
+  } else if (hostAndPort.startsWith('couchbase://')) {
+    hostAndPort = hostAndPort.substring('couchbase://'.length);
+  } else if (hostAndPort.startsWith('https://')) {
+     hostAndPort = hostAndPort.substring('https://'.length);
+  } else if (hostAndPort.startsWith('http://')) {
+     hostAndPort = hostAndPort.substring('http://'.length);
+  }
+
+  // Remove trailing slash if present
+  hostAndPort = hostAndPort.replace(/\/$/, '');
+
+  // Check if port is already present (handles IPv4 and IPv6)
+  const hasPort = /:\d+$|]:\d+$/.test(hostAndPort);
+
+  if (!hasPort && defaultPort) {
+    hostAndPort += ':' + defaultPort;
+  }
+
+  return 'https://' + hostAndPort;
+}
+
+/**
  * Helper function to get schema fields based on the request object.
  * Used when getData returns no results but schema is needed.
  */
@@ -692,7 +909,8 @@ function getFieldsFromRequest(request) {
     const requestedFieldsSchema = fullSchema.filter(f => fields.map(rf => rf.name).includes(f.name));
     return requestedFieldsSchema.length > 0 ? requestedFieldsSchema : fields.map(f => ({ name: f.name, label: f.name, dataType: 'STRING' })); 
   } catch (e) {
-    // Fallback if getSchema fails here
+    // Log the error and fallback if getSchema fails here
+    Logger.log('getFieldsFromRequest: Failed to get full schema, falling back to basic schema. Error: %s', e.toString());
     return fields.map(f => ({ name: f.name, label: f.name, dataType: 'STRING' }));
   }
 }
