@@ -23,6 +23,9 @@ function getAuthType() {
  * Called by isAuthValid.
  */
 function validateCredentials(path, username, password) {
+  // Log the raw path received from isAuthValid
+  Logger.log('validateCredentials received path: %s', path);
+  
   Logger.log('Attempting to validate credentials for path: %s, username: %s', path, username);
   if (!path || !username || !password) {
     Logger.log('Validation failed: Missing path, username, or password.');
@@ -32,16 +35,17 @@ function validateCredentials(path, username, password) {
   let apiBaseUrl = path;
   // Force HTTPS and remove common query/analytics ports to target standard 443
   if (apiBaseUrl.startsWith('couchbases://')) {
-    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbases://'.length);
+    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbases://'.length) + ':18093';
   } else if (apiBaseUrl.startsWith('couchbase://')) {
-    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbase://'.length); // Force HTTPS
+    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbase://'.length) + ':18093'; // Force HTTPS with port
   } else if (!apiBaseUrl.startsWith('https://')) {
-    apiBaseUrl = 'https://' + apiBaseUrl;
+    apiBaseUrl = 'https://' + apiBaseUrl + ':18093';
   }
-  apiBaseUrl = apiBaseUrl.replace(/:(8091|8093|8095|18091|18093|18095)$/, '');
   
   const queryUrl = apiBaseUrl.replace(/\/$/, '') + '/query/service';
-  Logger.log('Validation query URL (forced port 443): %s', queryUrl);
+  // Log the final URL being used for the fetch call
+  Logger.log('validateCredentials constructed queryUrl: %s', queryUrl);
+  Logger.log('Validation query URL (using port 18093): %s', queryUrl);
 
   const queryPayload = {
     statement: 'SELECT 1;',
@@ -96,10 +100,11 @@ function isAuthValid() {
      return false;
   }
   
-  Logger.log('isAuthValid: Found credentials. Attempting validation...');
+  // Re-enable live validation now that URL handling is fixed
+  Logger.log('isAuthValid: Found credentials. Performing live validation test.');
   const isValid = validateCredentials(path, username, password);
   Logger.log('isAuthValid: Validation result: %s', isValid);
-  return isValid; 
+  return isValid;
 }
 
 /**
@@ -373,10 +378,11 @@ function getData(request) {
  * Fetches data from Couchbase using the provided configuration.
  */
 function fetchData(configParams) {
+  // Get credentials and URL from configParams (populated by validateConfig)
   const username = configParams.username;
   const password = configParams.password;
-  const baseUrl = configParams.baseUrl;
-
+  const baseUrl = configParams.baseUrl; // Use the baseUrl from configParams
+  
   if (!username || !password || !baseUrl) {
      Logger.log('fetchData Error: Missing baseUrl, username, or password in configParams.');
      throw new Error('Configuration error: Connection details missing.');
@@ -388,15 +394,14 @@ function fetchData(configParams) {
   const timeout = 30000; 
 
   let apiBaseUrl = baseUrl;
-  // Force HTTPS and remove common query/analytics ports
+  // Force HTTPS and remove common query/analytics ports to target standard 443
   if (apiBaseUrl.startsWith('couchbases://')) {
-    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbases://'.length);
+    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbases://'.length) + ':18093';
   } else if (apiBaseUrl.startsWith('couchbase://')) {
-    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbase://'.length); // Force HTTPS
+    apiBaseUrl = 'https://' + apiBaseUrl.substring('couchbase://'.length) + ':18093'; // Force HTTPS with port
   } else if (!apiBaseUrl.startsWith('https://')) {
-    apiBaseUrl = 'https://' + apiBaseUrl;
+    apiBaseUrl = 'https://' + apiBaseUrl + ':18093';
   }
-  apiBaseUrl = apiBaseUrl.replace(/:(8091|8093|8095|18091|18093|18095)$/, '');
   
   const queryUrl = apiBaseUrl.replace(/\/$/, '') + '/query/service';
   let queryContext = `default:\`${bucket}\``;
