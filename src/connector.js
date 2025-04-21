@@ -223,12 +223,19 @@ function fetchCouchbaseMetadata() {
       };
     }
     
-    // Use query service URL to get all keyspaces (buckets, scopes, collections)
+    // Use query service URL to get all keyspaces using system:all_keyspaces
     const queryUrl = queryBaseUrl + '/query/service';
     
-    // This query will return all keyspaces (namespaces)
+    // Initialize the scopesCollections structure
+    const scopesCollections = {};
+    bucketNames.forEach(bucketName => {
+      scopesCollections[bucketName] = {}; // Initialize empty object for each bucket
+    });
+    
+    Logger.log('fetchCouchbaseMetadata: Querying using system:all_keyspaces');
+    
     const keyspaceQueryPayload = {
-      statement: "SELECT RAW CONCAT(CONCAT(CONCAT(namespace_id, '.'), bucket_id), '.' || ks.scope_id || '.' || ks.id) FROM system:keyspaces ks",
+      statement: "SELECT * FROM system:all_keyspaces",
       timeout: "10000ms"
     };
     
@@ -243,124 +250,54 @@ function fetchCouchbaseMetadata() {
       validateHttpsCertificates: false
     };
     
-    Logger.log('fetchCouchbaseMetadata: Querying keyspaces: %s', keyspaceQueryPayload.statement);
-    
-    // Initialize the scopesCollections structure with at least _default for each bucket
-    const scopesCollections = {};
-    bucketNames.forEach(bucketName => {
-      scopesCollections[bucketName] = {
-        '_default': ['_default']
-      };
-    });
-    
     try {
       const keyspaceResponse = UrlFetchApp.fetch(queryUrl, queryOptions);
       
       if (keyspaceResponse.getResponseCode() === 200) {
         const keyspaceData = JSON.parse(keyspaceResponse.getContentText());
-        Logger.log('fetchCouchbaseMetadata: Keyspace response: %s', keyspaceResponse.getContentText());
+        Logger.log('fetchCouchbaseMetadata: Keyspace response received from system:all_keyspaces');
         
         if (keyspaceData.results && Array.isArray(keyspaceData.results)) {
-          // Process each keyspace result
-          keyspaceData.results.forEach(keyspace => {
-            // Ensure keyspace is not null before processing
-            if (keyspace) { 
-              try {
-                // Split the keyspace string to extract parts: namespace.bucket.scope.collection
-                const parts = keyspace.split('.');
-                if (parts.length === 4) {
-                  const namespace = parts[0];
-                  const bucket = parts[1];
-                  const scope = parts[2];
-                  const collection = parts[3];
-                  
-                  // Only process for known buckets
-                  if (bucketNames.includes(bucket)) {
-                    // Initialize scope if not exists
-                    if (!scopesCollections[bucket][scope]) {
-                      scopesCollections[bucket][scope] = [];
-                    }
-                    
-                    // Add collection if not already added
-                    if (!scopesCollections[bucket][scope].includes(collection)) {
-                      scopesCollections[bucket][scope].push(collection);
-                      Logger.log('fetchCouchbaseMetadata: Added %s.%s.%s', bucket, scope, collection);
-                    }
-                  }
+          keyspaceData.results.forEach(item => {
+            if (item.all_keyspaces) {
+              const keyspace = item.all_keyspaces;
+              
+              if (keyspace.bucket && bucketNames.includes(keyspace.bucket) && 
+                  keyspace.scope && keyspace.name) {
+                
+                // Initialize scope if not exists
+                if (!scopesCollections[keyspace.bucket][keyspace.scope]) {
+                  scopesCollections[keyspace.bucket][keyspace.scope] = [];
                 }
-              } catch (e) {
-                Logger.log('Error processing keyspace %s: %s', keyspace, e.toString());
+                
+                // Add collection if not already added
+                if (!scopesCollections[keyspace.bucket][keyspace.scope].includes(keyspace.name)) {
+                  scopesCollections[keyspace.bucket][keyspace.scope].push(keyspace.name);
+                  Logger.log('fetchCouchbaseMetadata: Added: %s.%s.%s', 
+                            keyspace.bucket, keyspace.scope, keyspace.name);
+                }
               }
-            } else {
-              Logger.log('fetchCouchbaseMetadata: Skipping null keyspace entry.');
             }
           });
+        } else {
+           Logger.log('fetchCouchbaseMetadata: Keyspace query result format unexpected or empty.');
         }
       } else {
         Logger.log('Error fetching keyspaces. Code: %s, Response: %s', 
                   keyspaceResponse.getResponseCode(), keyspaceResponse.getContentText());
       }
     } catch (e) {
-      Logger.log('Error in keyspace query: %s', e.toString());
+      Logger.log('Error during keyspace query: %s', e.toString());
     }
     
-    // If nothing was found with the keyspace query, try another approach with system:all_keyspaces
-    if (Object.keys(scopesCollections).every(bucket => 
-        Object.keys(scopesCollections[bucket]).length <= 1 && 
-        Object.keys(scopesCollections[bucket])[0] === '_default')) {
-      
-      Logger.log('fetchCouchbaseMetadata: First keyspace query didn\'t find scopes/collections, trying alternate query');
-      
-      const alternateQueryPayload = {
-        statement: "SELECT * FROM system:all_keyspaces",
-        timeout: "10000ms"
-      };
-      
-      try {
-        const alternateResponse = UrlFetchApp.fetch(queryUrl, {
-          method: 'post',
-          contentType: 'application/json',
-          payload: JSON.stringify(alternateQueryPayload),
-          headers: {
-            Authorization: 'Basic ' + Utilities.base64Encode(username + ':' + password)
-          },
-          muteHttpExceptions: true,
-          validateHttpsCertificates: false
-        });
-        
-        if (alternateResponse.getResponseCode() === 200) {
-          const alternateData = JSON.parse(alternateResponse.getContentText());
-          Logger.log('fetchCouchbaseMetadata: Alternate keyspace response received');
-          
-          if (alternateData.results && Array.isArray(alternateData.results)) {
-            alternateData.results.forEach(item => {
-              if (item.all_keyspaces) {
-                const keyspace = item.all_keyspaces;
-                
-                if (keyspace.bucket && bucketNames.includes(keyspace.bucket) && 
-                    keyspace.scope && keyspace.name) {
-                  
-                  // Initialize scope if not exists
-                  if (!scopesCollections[keyspace.bucket][keyspace.scope]) {
-                    scopesCollections[keyspace.bucket][keyspace.scope] = [];
-                  }
-                  
-                  // Add collection if not already added
-                  if (!scopesCollections[keyspace.bucket][keyspace.scope].includes(keyspace.name)) {
-                    scopesCollections[keyspace.bucket][keyspace.scope].push(keyspace.name);
-                    Logger.log('fetchCouchbaseMetadata: Added from alternate: %s.%s.%s', 
-                              keyspace.bucket, keyspace.scope, keyspace.name);
-                  }
-                }
-              }
-            });
-          }
-        }
-      } catch (e) {
-        Logger.log('Error in alternate keyspace query: %s', e.toString());
+    // Add _default._default if no other collections were found for a bucket
+    bucketNames.forEach(bucketName => {
+      if (Object.keys(scopesCollections[bucketName]).length === 0) {
+        scopesCollections[bucketName] = { '_default': ['_default'] };
+        Logger.log('fetchCouchbaseMetadata: Added default keyspace for bucket %s', bucketName);
       }
-    }
-    
+    });
+
     return {
       buckets: bucketNames,
       scopesCollections: scopesCollections
@@ -386,17 +323,17 @@ function getConfig(request) {
   config
     .newInfo()
     .setId('instructions')
-    .setText('Select one or more collections from your Couchbase database. The connector will generate queries to retrieve data.');
+    .setText('Select one or more collections OR enter a custom N1QL query below. If a custom query is entered, the collection selection will be ignored.');
 
   // Fetch buckets, scopes, and collections
   const metadata = fetchCouchbaseMetadata();
   Logger.log('getConfig: Metadata fetch returned buckets: %s', JSON.stringify(metadata.buckets));
   
-  // Create a multi-select for collections with fully qualified paths
+  // Always show Collections multi-select 
   const collectionsSelect = config.newSelectMultiple()
     .setId('collections')
-    .setName('Couchbase Collections')
-    .setHelpText('Select one or more collections to query data from')
+    .setName('Couchbase Collections (Optional)')
+    .setHelpText('Select collections if not providing a custom query below.')
     .setAllowOverride(true);
   
   // Build a list of all fully qualified collection paths
@@ -425,34 +362,15 @@ function getConfig(request) {
       config.newOptionBuilder().setLabel(item.label).setValue(item.path)
     );
   });
-  
-  // Add result limit field
+
+  // Always show query textarea
   config
-    .newTextInput()
-    .setId('limit')
-    .setName('Result Limit')
-    .setHelpText('Maximum number of records to return per collection (default: 1000)')
-    .setPlaceholder('1000')
+    .newTextArea()
+    .setId('query')
+    .setName('Custom N1QL Query (Overrides Collection Selection)')
+    .setHelpText('Enter a valid N1QL query. If entered, this query will be used instead of the collection selection above.')
+    .setPlaceholder('SELECT * FROM `bucket`.`scope`.`collection`')
     .setAllowOverride(true);
-  
-  // Add custom query checkbox
-  const useCustomQuery = config
-    .newCheckbox()
-    .setId('useCustomQuery')
-    .setName('Use Custom Query')
-    .setHelpText('Check this box to write your own N1QL query instead of using the generated ones')
-    .setAllowOverride(true);
-  
-  // Only show query textarea if custom query is checked
-  if (request && request.configParams && request.configParams.useCustomQuery === 'true') {
-    config
-      .newTextArea()
-      .setId('query')
-      .setName('Custom N1QL Query')
-      .setHelpText('Enter a valid N1QL query (e.g., SELECT * FROM bucket.scope.collection LIMIT 100)')
-      .setPlaceholder('SELECT * FROM bucket.scope.collection LIMIT 100')
-      .setAllowOverride(true);
-  }
 
   return config.build();
 }
@@ -479,36 +397,26 @@ function validateConfig(configParams) {
   configParams.username = username;
   configParams.password = password;
   
-  // Validate required connector-specific config parameters
-  if (!configParams.collections) {
-    throwUserError('At least one collection must be selected.');
-  }
-  
-  // Convert collections string to array if it's a string
-  if (typeof configParams.collections === 'string') {
+  // Convert collections string to array if it's a string (only if it exists)
+  if (configParams.collections && typeof configParams.collections === 'string') {
     configParams.collections = configParams.collections.split(',');
   }
   
-  // Set default limit if not provided
-  if (!configParams.limit) {
-    configParams.limit = 1000;
+  // Validate configuration: Use query if provided, otherwise require collections
+  const hasQuery = configParams.query && configParams.query.trim() !== '';
+  const hasCollections = configParams.collections && configParams.collections.length > 0;
+
+  if (hasQuery) {
+    // Custom query is provided, ignore collections
+    configParams.collections = []; // Clear collections explicitly
+    Logger.log('validateConfig: Using custom query: %s', configParams.query);
+  } else if (hasCollections) {
+    // Collections are selected, query is empty
+    configParams.query = ''; // Ensure query is empty
+    Logger.log('validateConfig: Using collections: %s', configParams.collections.join(', '));
   } else {
-    // Ensure limit is a number
-    configParams.limit = parseInt(configParams.limit, 10);
-    if (isNaN(configParams.limit) || configParams.limit <= 0) {
-      configParams.limit = 1000;
-    }
-  }
-  
-  // If useCustomQuery is checked, verify that query is provided
-  if (configParams.useCustomQuery === 'true' && !configParams.query) {
-    throwUserError('Custom query is required when "Use Custom Query" is checked.');
-  }
-  
-  // Generate query automatically if custom query not being used
-  if (configParams.useCustomQuery !== 'true') {
-    // We'll generate the query in fetchData for each collection
-    Logger.log('validateConfig: Will generate queries for collections: %s', configParams.collections.join(', '));
+    // Neither custom query nor collections are provided
+    throwUserError('Configuration Error: Please select at least one collection OR enter a Custom N1QL Query.');
   }
   
   // Optional: Check Capella URL format
@@ -531,31 +439,35 @@ function getSchema(request) {
   request.configParams = validateConfig(request.configParams);
   
   try {
-    // If using custom query, fetch schema from that query
-    if (request.configParams.useCustomQuery === 'true') {
-      const result = fetchData(request.configParams);
+    const hasCustomQuery = request.configParams.query && request.configParams.query.trim() !== '';
+
+    // If a custom query exists, use it directly
+    if (hasCustomQuery) {
+      Logger.log('getSchema: Using custom query: %s', request.configParams.query);
+      // Pass the full configParams, fetchData doesn't need separate bucket/scope/collection for custom query
+      const result = fetchData(request.configParams); 
       const schema = buildSchema(result);
       return { schema: schema };
     } else {
-      // Get the first collection and use it for schema
+      // Otherwise, generate query based on the first selected collection
       const collection = request.configParams.collections[0];
       const [bucket, scope, collectionName] = collection.split('.');
       
-      // Set the first collection for schema retrieval using object spread
+      // Set the specific collection details for the generated query context in fetchData
       const schemaParams = {
-        ...request.configParams,
+        ...request.configParams, // Keep other params like credentials
         bucket: bucket,
         scope: scope,
-        collection: collectionName
+        collection: collectionName // Used for context, query is generated below
       };
       
-      // Generate a query for this collection
+      // Generate the SELECT * query for this collection
       const formattedBucket = '`' + bucket + '`';
       const formattedScope = '`' + scope + '`';
       const formattedCollection = '`' + collectionName + '`';
-      schemaParams.query = 'SELECT * FROM ' + formattedBucket + '.' + formattedScope + '.' + formattedCollection + ' LIMIT ' + schemaParams.limit;
+      schemaParams.query = 'SELECT * FROM ' + formattedBucket + '.' + formattedScope + '.' + formattedCollection;
       
-      Logger.log('getSchema: Using collection %s for schema with query: %s', collection, schemaParams.query);
+      Logger.log('getSchema: Using collection %s for schema with generated query: %s', collection, schemaParams.query);
       
       const result = fetchData(schemaParams);
       const schema = buildSchema(result);
@@ -694,76 +606,87 @@ function getData(request) {
   request.configParams = validateConfig(request.configParams);
   
   try {
-    // If using custom query, return data from that query
-    if (request.configParams.useCustomQuery === 'true') {
-      const result = fetchData(request.configParams);
+    const hasCustomQuery = request.configParams.query && request.configParams.query.trim() !== '';
+
+    // If a custom query exists, use it directly
+    if (hasCustomQuery) {
+      Logger.log('getData: Using custom query: %s', request.configParams.query);
+      // Pass the full configParams, fetchData handles the query
+      const result = fetchData(request.configParams); 
       
       if (!result?.results?.length) {
         const requestedFieldsSchema = getFieldsFromRequest(request);
-        Logger.log('getData: Query returned no results. Returning empty rows with schema.');
+        Logger.log('getData (Custom Query): Query returned no results. Returning empty rows with schema.');
         return {
           schema: requestedFieldsSchema,
           rows: []
         };
       }
       
-      const schema = buildSchema(result);
+      // Schema needs to be built based on the custom query results
+      const schema = buildSchema(result); 
       const requestedFieldIds = request.fields.map(field => field.name);
+      // Filter the schema based on fields requested by Looker Studio
       const requestedFields = schema.filter(field => requestedFieldIds.indexOf(field.name) > -1);
 
       const rows = result.results.map(row => {
+        // Handle potentially nested results (common in Couchbase N1QL)
         let dataObject = row;
         const keys = Object.keys(row);
+        // If the result row has only one key, assume the actual data is nested under that key
         if (keys.length === 1 && typeof row[keys[0]] === 'object' && row[keys[0]] !== null) {
            dataObject = row[keys[0]];
         }
+        // Map requested fields to values from the data object
         const values = requestedFieldIds.map(fieldId => dataObject[fieldId] !== undefined ? dataObject[fieldId] : null);
         return { values };
       });
       
-      Logger.log('getData successful. Returning %s rows.', rows.length);
+      Logger.log('getData (Custom Query): Returning %s rows.', rows.length);
       return {
-        schema: requestedFields,
+        schema: requestedFields, // Use the filtered schema
         rows: rows
       };
-    } else {
-      // Get the first collection for now (in the future we could union multiple collections)
-      // Currently Looker Studio doesn't handle multiple schemas well, so use only the first selected collection
+    } else { 
+      // Otherwise, generate query based on the first selected collection
       const collection = request.configParams.collections[0];
       const [bucket, scope, collectionName] = collection.split('.');
       
-      // Set the collection for data retrieval using object spread
+      // Set the specific collection details for the generated query context in fetchData
       const dataParams = {
-        ...request.configParams,
+        ...request.configParams, // Keep other params like credentials
         bucket: bucket,
         scope: scope,
-        collection: collectionName
+        collection: collectionName // Used for context, query is generated below
       };
       
-      // Generate a query for this collection
+      // Generate the SELECT * query for this collection
       const formattedBucket = '`' + bucket + '`';
       const formattedScope = '`' + scope + '`';
       const formattedCollection = '`' + collectionName + '`';
-      dataParams.query = 'SELECT * FROM ' + formattedBucket + '.' + formattedScope + '.' + formattedCollection + ' LIMIT ' + dataParams.limit;
+      dataParams.query = 'SELECT * FROM ' + formattedBucket + '.' + formattedScope + '.' + formattedCollection;
       
-      Logger.log('getData: Using collection %s for data with query: %s', collection, dataParams.query);
+      Logger.log('getData: Using collection %s for data with generated query: %s', collection, dataParams.query);
       
       const result = fetchData(dataParams);
       
       if (!result?.results?.length) {
         const requestedFieldsSchema = getFieldsFromRequest(request);
-        Logger.log('getData: Query returned no results. Returning empty rows with schema.');
+        Logger.log('getData (Generated Query): Query returned no results. Returning empty rows with schema.');
         return {
           schema: requestedFieldsSchema,
           rows: []
         };
       }
       
+      // Build schema from the results of the generated query
       const schema = buildSchema(result);
       const requestedFieldIds = request.fields.map(field => field.name);
+      // Filter schema based on requested fields
       const requestedFields = schema.filter(field => requestedFieldIds.indexOf(field.name) > -1);
 
       const rows = result.results.map(row => {
+        // Handle potentially nested results
         let dataObject = row;
         const keys = Object.keys(row);
         if (keys.length === 1 && typeof row[keys[0]] === 'object' && row[keys[0]] !== null) {
@@ -773,7 +696,7 @@ function getData(request) {
         return { values };
       });
       
-      Logger.log('getData successful. Returning %s rows.', rows.length);
+      Logger.log('getData (Generated Query): Returning %s rows.', rows.length);
       return {
         schema: requestedFields,
         rows: rows
