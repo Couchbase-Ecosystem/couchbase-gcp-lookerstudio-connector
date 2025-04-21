@@ -329,11 +329,11 @@ function getConfig(request) {
   const metadata = fetchCouchbaseMetadata();
   Logger.log('getConfig: Metadata fetch returned buckets: %s', JSON.stringify(metadata.buckets));
   
-  // Always show Collections multi-select 
-  const collectionsSelect = config.newSelectMultiple()
-    .setId('collections')
-    .setName('Couchbase Collections (Optional)')
-    .setHelpText('Select collections if not providing a custom query below.')
+  // Use Single Select for the collection, as only the first is used by getSchema/getData
+  const collectionSingleSelect = config.newSelectSingle()
+    .setId('collection')
+    .setName('Couchbase Collection (Required if no Custom Query)')
+    .setHelpText('Select the single collection to query data from (ignored if Custom Query is entered).')
     .setAllowOverride(true);
   
   // Build a list of all fully qualified collection paths
@@ -358,7 +358,7 @@ function getConfig(request) {
   
   // Add options for each collection path
   collectionPaths.forEach(item => {
-    collectionsSelect.addOption(
+    collectionSingleSelect.addOption(
       config.newOptionBuilder().setLabel(item.label).setValue(item.path)
     );
   });
@@ -398,33 +398,40 @@ function validateConfig(configParams) {
   configParams.password = password;
   
   // Convert collections string to array if it's a string (only if it exists)
-  if (configParams.collections && typeof configParams.collections === 'string') {
-    configParams.collections = configParams.collections.split(',');
-  }
+  // This check is no longer needed as we use single select now
+  // if (configParams.collections && typeof configParams.collections === 'string') {
+  //  configParams.collections = configParams.collections.split(',');
+  // }
   
-  // Validate configuration: Use query if provided, otherwise require collections
+  // Validate configuration: Use query if provided, otherwise require a collection
   const hasQuery = configParams.query && configParams.query.trim() !== '';
-  const hasCollections = configParams.collections && configParams.collections.length > 0;
+  // Use the singular 'collection' ID now
+  const hasCollection = configParams.collection && configParams.collection.trim() !== ''; 
 
   if (hasQuery) {
-    // Custom query is provided, ignore collections
-    configParams.collections = []; // Clear collections explicitly
+    // Custom query is provided, ignore collection selection
+    configParams.collection = ''; // Clear collection explicitly
     Logger.log('validateConfig: Using custom query: %s', configParams.query);
-  } else if (hasCollections) {
-    // Collections are selected, query is empty
+  } else if (hasCollection) {
+    // Collection is selected, query is empty
     configParams.query = ''; // Ensure query is empty
-    Logger.log('validateConfig: Using collections: %s', configParams.collections.join(', '));
+    Logger.log('validateConfig: Using collection: %s', configParams.collection); 
   } else {
-    // Neither custom query nor collections are provided
+    // Neither custom query nor collection is provided
     throwUserError('Configuration Error: Please select at least one collection OR enter a Custom N1QL Query.');
   }
-  
+
   // Optional: Check Capella URL format
   if (path.includes('cloud.couchbase.com') && !path.startsWith('couchbases://') && !path.startsWith('https://')) {
       Logger.log('validateConfig Warning: Capella URL found without secure prefix: %s', path);
   }
   
-  Logger.log('validateConfig successful for collections: %s', configParams.collections.join(', '));
+  // Log success based on which input was used
+  if (hasQuery) {
+      Logger.log('validateConfig successful (used custom query).');
+  } else {
+      Logger.log('validateConfig successful (used collection: %s).', configParams.collection);
+  }
   return configParams;
 }
 
@@ -449,9 +456,14 @@ function getSchema(request) {
       const schema = buildSchema(result);
       return { schema: schema };
     } else {
-      // Otherwise, generate query based on the first selected collection
-      const collection = request.configParams.collections[0];
-      const [bucket, scope, collectionName] = collection.split('.');
+      // Otherwise, generate query based on the selected collection
+      const collectionPath = request.configParams.collection; // Use singular 'collection'
+      if (!collectionPath) {
+         // This should ideally be caught by validateConfig, but double-check
+         throwUserError('Configuration Error: No collection selected.'); 
+         return; // Should not proceed
+      }
+      const [bucket, scope, collectionName] = collectionPath.split('.');
       
       // Set the specific collection details for the generated query context in fetchData
       const schemaParams = {
@@ -461,13 +473,13 @@ function getSchema(request) {
         collection: collectionName // Used for context, query is generated below
       };
       
-      // Generate the SELECT * query for this collection
+      // Generate the SELECT * query, limited for schema inference performance
       const formattedBucket = '`' + bucket + '`';
       const formattedScope = '`' + scope + '`';
       const formattedCollection = '`' + collectionName + '`';
-      schemaParams.query = 'SELECT * FROM ' + formattedBucket + '.' + formattedScope + '.' + formattedCollection;
+      schemaParams.query = 'SELECT * FROM ' + formattedBucket + '.' + formattedScope + '.' + formattedCollection + ' LIMIT 100'; // Limit for schema performance
       
-      Logger.log('getSchema: Using collection %s for schema with generated query: %s', collection, schemaParams.query);
+      Logger.log('getSchema: Using collection %s for schema with generated query (LIMIT 100): %s', collectionPath, schemaParams.query);
       
       const result = fetchData(schemaParams);
       const schema = buildSchema(result);
@@ -491,105 +503,106 @@ function buildSchema(result) {
     throw new Error('Query returned no results or failed. Cannot build schema. Status: ' + status + ', Errors: ' + errors);
   }
   
+  Logger.log(JSON.stringify(result.results.slice(0, 10), null, 2)); 
+  
   const schema = [];
-  Logger.log('buildSchema: Analyzing first result row to determine schema');
-  
-  // Try to find the most complete row in the first few results for better schema detection
-  const rowsToCheck = Math.min(result.results.length, 10);
-  let mostCompleteRow = result.results[0];
-  let maxProperties = 0;
-  
-  for (let i = 0; i < rowsToCheck; i++) {
-    const row = result.results[i];
-    let propertyCount = 0;
-    
-    // Count properties in this row (including nested ones)
-    function countProperties(obj) {
-      if (typeof obj !== 'object' || obj === null) return 0;
-      let count = 0;
-      for (const key in obj) {
-        count++;
-        if (typeof obj[key] === 'object' && obj[key] !== null) {
-          // Don't count nested objects as additional properties
-          // Just count the parent key
-        }
-      }
-      return count;
-    }
-    
-    // Check if data is nested under a key
-    const keys = Object.keys(row);
-    if (keys.length === 1 && typeof row[keys[0]] === 'object' && row[keys[0]] !== null) {
-      propertyCount = countProperties(row[keys[0]]);
-    } else {
-      propertyCount = countProperties(row);
-    }
-    
-    if (propertyCount > maxProperties) {
-      mostCompleteRow = row;
-      maxProperties = propertyCount;
-    }
-  }
-  
-  // Use the most complete row to build schema
-  let dataObject = mostCompleteRow;
-  const keys = Object.keys(mostCompleteRow);
-  if (keys.length === 1 && typeof mostCompleteRow[keys[0]] === 'object' && mostCompleteRow[keys[0]] !== null) {
-    dataObject = mostCompleteRow[keys[0]];
-    Logger.log('buildSchema: Data appears nested under key: %s', keys[0]);
-  } else {
-    Logger.log('buildSchema: Data appears to be at the top level.');
-  }
-
-  // Function to determine field type and add it to schema
+  // Helper function defined inside buildSchema to access the schema array easily
   function addFieldToSchema(key, value, parentKey = '') {
     const fieldName = parentKey ? parentKey + '.' + key : key;
     
-    if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
-      // For nested objects, flatten them with dot notation
-      Logger.log('buildSchema: Found nested object for field %s', fieldName);
-      for (const nestedKey in value) {
-        addFieldToSchema(nestedKey, value[nestedKey], fieldName);
-      }
-      return;
-    }
-    
-    // Skip arrays for now
-    if (Array.isArray(value)) {
-      Logger.log('buildSchema: Skipping array field %s', fieldName);
-      return;
-    }
-    
-    let dataType = 'STRING';
-    let semantics = { conceptType: 'DIMENSION' };
+    // --- Determine potential type from current value --- 
+    let potentialDataType = 'STRING'; // Default to STRING
+    let potentialSemantics = { conceptType: 'DIMENSION' };
 
-    if (typeof value === 'number') {
-      dataType = 'NUMBER';
-      semantics = { conceptType: 'METRIC', isReaggregatable: true };
+    // Check specific types first
+    if (value === null || value === undefined) {
+        // If the first time we see a field it's null, assume STRING for flexibility
+        potentialDataType = 'STRING'; 
+        potentialSemantics = { conceptType: 'DIMENSION' };
+    } else if (typeof value === 'number') {
+      potentialDataType = 'NUMBER';
+      potentialSemantics = { conceptType: 'METRIC', isReaggregatable: true };
     } else if (typeof value === 'boolean') {
-      dataType = 'BOOLEAN';
-      semantics = { conceptType: 'DIMENSION' };
+      potentialDataType = 'BOOLEAN';
+      potentialSemantics = { conceptType: 'DIMENSION' };
     } else if (value instanceof Date || (typeof value === 'string' && value.length > 10 && !isNaN(Date.parse(value)))) {
-      dataType = 'YEAR_MONTH_DAY_HOUR';
-      semantics = { conceptType: 'DIMENSION', semanticGroup: 'DATETIME' };
-    }
+      potentialDataType = 'YEAR_MONTH_DAY_HOUR';
+      potentialSemantics = { conceptType: 'DIMENSION', semanticGroup: 'DATETIME' };
+    } else if (typeof value === 'object' && !Array.isArray(value)) {
+       // Handle nested objects recursively
+       for (const nestedKey in value) {
+         addFieldToSchema(nestedKey, value[nestedKey], fieldName);
+       }
+       return; // Stop processing this level for nested objects
+    } else if (Array.isArray(value)){
+        // Skip arrays
+        return;
+    } // Otherwise, it remains STRING/DIMENSION
+    
+    // --- Check against existing schema entry --- 
+    const existingFieldIndex = schema.findIndex(field => field.name === fieldName);
 
-    // Check if this field already exists
-    if (!schema.some(field => field.name === fieldName)) {
+    if (existingFieldIndex === -1) {
+      // Field doesn't exist, add it
       schema.push({
         name: fieldName,
-        label: fieldName,
-        dataType: dataType,
-        semantics: semantics
+        label: fieldName, 
+        dataType: potentialDataType,
+        semantics: potentialSemantics
       });
-      Logger.log('buildSchema: Added field %s with type %s', fieldName, dataType);
+      Logger.log('buildSchema: Added field [%s] with type [%s]', fieldName, potentialDataType);
+    } else {
+      // Field exists, check for type merge/update
+      const existingField = schema[existingFieldIndex];
+      const currentDataType = existingField.dataType;
+
+      if (currentDataType !== potentialDataType) {
+        // Types differ, apply merging rules
+        let mergedDataType = currentDataType;
+        let needsUpdate = false;
+
+        // If either is STRING, the result is STRING
+        if (potentialDataType === 'STRING') {
+            mergedDataType = 'STRING';
+            needsUpdate = true;
+        } else if (currentDataType !== 'STRING') {
+             // If current isn't STRING and potential isn't STRING, but they differ 
+             // (e.g., NUMBER vs BOOLEAN, NUMBER vs DATE), default to STRING for safety.
+             mergedDataType = 'STRING'; 
+             needsUpdate = true;
+        } // If current is already STRING, mergedDataType remains STRING, no update needed based on this rule.
+        
+        if (needsUpdate && existingField.dataType !== mergedDataType) {
+          Logger.log('buildSchema: Updating field [%s] type from [%s] to [%s] due to merge.', 
+                    fieldName, existingField.dataType, mergedDataType);
+          existingField.dataType = mergedDataType;
+          // When merging to STRING, reset semantics to basic DIMENSION
+          existingField.semantics = { conceptType: 'DIMENSION' }; 
+        }
+      }
     }
   }
+  
+  Logger.log('buildSchema: Iterating through %s documents to build merged schema...', result.results.length);
 
-  // Process all top-level fields
-  for (const key in dataObject) {
-    addFieldToSchema(key, dataObject[key]);
-  }
+  // Iterate through ALL documents in the sample to build the schema
+  result.results.forEach((row, index) => {
+    let dataObject = row;
+    const keys = Object.keys(row);
+    
+    // Check if data is nested under a single key (common pattern)
+    if (keys.length === 1 && typeof row[keys[0]] === 'object' && row[keys[0]] !== null) {
+      dataObject = row[keys[0]];
+      // Logger.log('buildSchema (Doc %s): Data is nested under key: %s', index, keys[0]); // Optional log
+    } else {
+      // Logger.log('buildSchema (Doc %s): Data is at the top level.', index); // Optional log
+    }
+
+    // Process all top-level fields in the current dataObject
+    for (const key in dataObject) {
+      addFieldToSchema(key, dataObject[key]);
+    }
+  });
 
   if (schema.length === 0) {
     throw new Error('Could not determine any fields from the first row of results. Check query and data structure.');
@@ -648,9 +661,14 @@ function getData(request) {
         rows: rows
       };
     } else { 
-      // Otherwise, generate query based on the first selected collection
-      const collection = request.configParams.collections[0];
-      const [bucket, scope, collectionName] = collection.split('.');
+      // Otherwise, generate query based on the selected collection
+      const collectionPath = request.configParams.collection; // Use singular 'collection'
+      if (!collectionPath) {
+         // This should ideally be caught by validateConfig, but double-check
+         throwUserError('Configuration Error: No collection selected.'); 
+         return; // Should not proceed
+      }
+      const [bucket, scope, collectionName] = collectionPath.split('.');
       
       // Set the specific collection details for the generated query context in fetchData
       const dataParams = {
@@ -666,7 +684,7 @@ function getData(request) {
       const formattedCollection = '`' + collectionName + '`';
       dataParams.query = 'SELECT * FROM ' + formattedBucket + '.' + formattedScope + '.' + formattedCollection;
       
-      Logger.log('getData: Using collection %s for data with generated query: %s', collection, dataParams.query);
+      Logger.log('getData: Using collection %s for data with generated query: %s', collectionPath, dataParams.query);
       
       const result = fetchData(dataParams);
       
@@ -723,9 +741,9 @@ function fetchData(configParams) {
      throw new Error('Configuration error: Connection details missing.');
   }
 
-  const bucket = configParams.bucket;
-  const scope = configParams.scope || '_default';
-  const query = configParams.query; // This will be the auto-generated query if useCustomQuery is not true
+  const bucket = configParams.bucket; // May be undefined if using custom query directly
+  const scope = configParams.scope || '_default'; // May be undefined if using custom query directly
+  const query = configParams.query; 
   const timeout = 30000; 
 
   // Construct the base API URL using the helper function
@@ -733,16 +751,20 @@ function fetchData(configParams) {
   Logger.log('fetchData: Constructed API Base URL: %s', apiBaseUrl);
   
   const queryUrl = apiBaseUrl + '/query/service'; // Append the service path
-  let queryContext = `default:\`${bucket}\``;
-  if (scope && scope !== '_default') {
-    queryContext += `.\`${scope}\``;
-  }
-
+  
   const queryPayload = {
     statement: query,
-    query_context: queryContext,
     timeout: timeout + "ms"
   };
+
+  // Add query_context only if bucket and scope are available (i.e., not a direct custom query)
+  if (bucket && scope) {
+      let queryContext = `default:\`${bucket}\`.\`${scope}\``;
+      queryPayload.query_context = queryContext;
+      Logger.log('fetchData: Using query context: %s', queryContext);
+  } else {
+      Logger.log('fetchData: Not using query context (likely custom query).');
+  }
 
   const options = {
     method: 'post',
@@ -756,7 +778,7 @@ function fetchData(configParams) {
   };
 
   try {
-    Logger.log('fetchData: Sending query to %s for context %s', queryUrl, queryContext);
+    Logger.log('fetchData: Sending query to %s', queryUrl);
     Logger.log('fetchData: Query: %s', query);
     const response = UrlFetchApp.fetch(queryUrl, options);
     const responseCode = response.getResponseCode();
@@ -805,7 +827,7 @@ function constructApiUrl(path, defaultPort) {
   }
 
   // Remove trailing slash if present
-  hostAndPort = hostAndPort.replace(/\/$/, '');
+  hostAndPort = hostAndPort.replace(/$/, '');
 
   // Check if port is already present (handles IPv4 and IPv6)
   const hasPort = /:\d+$|]:\d+$/.test(hostAndPort);
