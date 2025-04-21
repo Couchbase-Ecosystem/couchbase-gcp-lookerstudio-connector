@@ -620,106 +620,106 @@ function getData(request) {
   
   try {
     const hasCustomQuery = request.configParams.query && request.configParams.query.trim() !== '';
+    let result;
+    let queryToRun;
 
-    // If a custom query exists, use it directly
     if (hasCustomQuery) {
       Logger.log('getData: Using custom query: %s', request.configParams.query);
-      // Pass the full configParams, fetchData handles the query
-      const result = fetchData(request.configParams); 
-      
-      if (!result?.results?.length) {
-        const requestedFieldsSchema = getFieldsFromRequest(request);
-        Logger.log('getData (Custom Query): Query returned no results. Returning empty rows with schema.');
-        return {
-          schema: requestedFieldsSchema,
-          rows: []
-        };
-      }
-      
-      // Schema needs to be built based on the custom query results
-      const schema = buildSchema(result); 
-      const requestedFieldIds = request.fields.map(field => field.name);
-      // Filter the schema based on fields requested by Looker Studio
-      const requestedFields = schema.filter(field => requestedFieldIds.indexOf(field.name) > -1);
-
-      const rows = result.results.map(row => {
-        // Handle potentially nested results (common in Couchbase N1QL)
-        let dataObject = row;
-        const keys = Object.keys(row);
-        // If the result row has only one key, assume the actual data is nested under that key
-        if (keys.length === 1 && typeof row[keys[0]] === 'object' && row[keys[0]] !== null) {
-           dataObject = row[keys[0]];
-        }
-        // Map requested fields to values from the data object
-        const values = requestedFieldIds.map(fieldId => dataObject[fieldId] !== undefined ? dataObject[fieldId] : null);
-        return { values };
-      });
-      
-      Logger.log('getData (Custom Query): Returning %s rows.', rows.length);
-      return {
-        schema: requestedFields, // Use the filtered schema
-        rows: rows
-      };
+      queryToRun = request.configParams.query;
+      // Pass the full configParams, fetchData handles the query context
+      result = fetchData(request.configParams); 
     } else { 
-      // Otherwise, generate query based on the selected collection
-      const collectionPath = request.configParams.collection; // Use singular 'collection'
+      // Generate query based on the selected collection
+      const collectionPath = request.configParams.collection;
       if (!collectionPath) {
-         // This should ideally be caught by validateConfig, but double-check
          throwUserError('Configuration Error: No collection selected.'); 
-         return; // Should not proceed
+         return; 
       }
       const [bucket, scope, collectionName] = collectionPath.split('.');
       
       // Set the specific collection details for the generated query context in fetchData
       const dataParams = {
-        ...request.configParams, // Keep other params like credentials
+        ...request.configParams, 
         bucket: bucket,
         scope: scope,
-        collection: collectionName // Used for context, query is generated below
+        collection: collectionName 
       };
       
-      // Generate the SELECT * query for this collection
+      // Generate the SELECT * query for this collection (no limit here)
       const formattedBucket = '`' + bucket + '`';
       const formattedScope = '`' + scope + '`';
       const formattedCollection = '`' + collectionName + '`';
       dataParams.query = 'SELECT * FROM ' + formattedBucket + '.' + formattedScope + '.' + formattedCollection;
+      queryToRun = dataParams.query;
       
       Logger.log('getData: Using collection %s for data with generated query: %s', collectionPath, dataParams.query);
-      
-      const result = fetchData(dataParams);
-      
-      if (!result?.results?.length) {
-        const requestedFieldsSchema = getFieldsFromRequest(request);
-        Logger.log('getData (Generated Query): Query returned no results. Returning empty rows with schema.');
-        return {
-          schema: requestedFieldsSchema,
-          rows: []
-        };
-      }
-      
-      // Build schema from the results of the generated query
-      const schema = buildSchema(result);
-      const requestedFieldIds = request.fields.map(field => field.name);
-      // Filter schema based on requested fields
-      const requestedFields = schema.filter(field => requestedFieldIds.indexOf(field.name) > -1);
+      result = fetchData(dataParams);
+    }
 
-      const rows = result.results.map(row => {
-        // Handle potentially nested results
-        let dataObject = row;
-        const keys = Object.keys(row);
-        if (keys.length === 1 && typeof row[keys[0]] === 'object' && row[keys[0]] !== null) {
-           dataObject = row[keys[0]];
-        }
-        const values = requestedFieldIds.map(fieldId => dataObject[fieldId] !== undefined ? dataObject[fieldId] : null);
-        return { values };
-      });
-      
-      Logger.log('getData (Generated Query): Returning %s rows.', rows.length);
+    // --- Process results --- 
+    if (!result?.results?.length) {
+      // If query returned no results, return empty rows based on the fields Looker Studio requested
+      const requestedFieldsSchema = getFieldsFromRequest(request); // Use helper to get schema structure
+      Logger.log('getData: Query [%s] returned no results. Returning empty rows with schema.', queryToRun);
       return {
-        schema: requestedFields,
-        rows: rows
+        schema: requestedFieldsSchema,
+        rows: []
       };
     }
+
+    // Get the field IDs requested by Looker Studio IN THEIR ORDER
+    const requestedFieldIds = request.fields.map(field => field.name);
+    
+    // Build the schema for the response IN THE ORDER requested by Looker Studio
+    // We use the schema information provided in the request itself, rather than re-building from data
+    let responseSchema = [];
+    try {
+       // Attempt to get the full schema definition to ensure correct data types
+       const fullSchema = getSchema(request).schema; 
+       responseSchema = requestedFieldIds.map(fieldId => {
+          const fieldDefinition = fullSchema.find(f => f.name === fieldId);
+          // Return a minimal schema object if somehow not found in full schema (fallback)
+          return fieldDefinition || { name: fieldId, label: fieldId, dataType: 'STRING' }; 
+       });
+    } catch (e) {
+       // Fallback if getSchema fails during this phase (should be rare)
+       Logger.log('getData: Error getting full schema during response building: %s. Using basic schema.', e);
+       responseSchema = requestedFieldIds.map(fieldId => ({ name: fieldId, label: fieldId, dataType: 'STRING' }));
+    }
+
+    // Map data rows to the expected { values: [...] } format
+    const rows = result.results.map(row => {
+      // Handle potentially nested results (common in Couchbase N1QL)
+      let dataObject = row;
+      const keys = Object.keys(row);
+      if (keys.length === 1 && typeof row[keys[0]] === 'object' && row[keys[0]] !== null) {
+         dataObject = row[keys[0]];
+      }
+      
+      // Create values array IN THE SAME ORDER as requestedFieldIds (and responseSchema)
+      const values = requestedFieldIds.map(fieldId => { 
+         // Handle nested field access (e.g., 'geo.lat')
+         let value = null;
+         if (fieldId.includes('.')) {
+            try {
+               value = fieldId.split('.').reduce((obj, key) => obj && obj[key] !== undefined ? obj[key] : null, dataObject);
+            } catch (e) {
+               value = null; // Handle cases where reduce fails
+            }
+         } else {
+            value = dataObject[fieldId];
+         }
+         return value !== undefined ? value : null;
+       });
+      return { values };
+    });
+    
+    Logger.log('getData: Returning %s rows based on query: %s', rows.length, queryToRun);
+    return {
+      schema: responseSchema, // Use the schema ordered according to the request
+      rows: rows
+    };
+
   } catch (e) {
     Logger.log('Error during getData: %s', e.toString());
     Logger.log('getData Exception details: %s', e.stack);
