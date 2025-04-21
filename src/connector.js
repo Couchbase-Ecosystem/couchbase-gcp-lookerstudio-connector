@@ -369,7 +369,7 @@ function getConfig(request) {
     .setId('query')
     .setName('Custom N1QL Query (Overrides Collection Selection)')
     .setHelpText('Enter a valid N1QL query. If entered, this query will be used instead of the collection selection above.')
-    .setPlaceholder('SELECT * FROM `bucket`.`scope`.`collection`')
+    .setPlaceholder('SELECT airline.name, airline.iata, airline.country FROM `travel-sample`.`inventory`.`airline` AS airline WHERE airline.country = "France" AND airline.name LIKE "A%" LIMIT 10 OFFSET 20')
     .setAllowOverride(true);
 
   return config.build();
@@ -451,8 +451,20 @@ function getSchema(request) {
     // If a custom query exists, use it directly
     if (hasCustomQuery) {
       Logger.log('getSchema: Using custom query: %s', request.configParams.query);
-      // Pass the full configParams, fetchData doesn't need separate bucket/scope/collection for custom query
       const result = fetchData(request.configParams); 
+      
+      // Check if the custom query returned any results for schema inference
+      if (!result?.results?.length) {
+          Logger.log('getSchema Error: Custom query returned no results. Cannot build schema.');
+          throwUserError(
+            'Custom query returned no results. Schema cannot be determined. ' + 
+            'Please ensure your custom query returns at least one row, or use the collection selector instead.'
+          );
+          // throwUserError stops execution, but return just in case
+          return; 
+      }
+      
+      // Proceed with building schema from the custom query results
       const schema = buildSchema(result);
       return { schema: schema };
     } else {
