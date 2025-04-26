@@ -106,6 +106,35 @@ async function cancelRequest(identifier) {
   } catch (error) {
     const errorMsg = error.response?.data || error.message;
     console.error(`Error cancelling request ${identifier}:`, errorMsg);
+    
+    // Special handling for 400 status code which might mean the query already completed
+    if (error.response?.status === 400) {
+      // Check if we can find this in the completed requests
+      try {
+        console.log(`Request ${identifier} not found in active requests, checking if it completed...`);
+        const completedRequests = await getCompletedRequests();
+        // For request ID, we can check directly
+        if (isRequestId) {
+          const found = completedRequests.some(req => req.requestID === identifier || req.uuid === identifier);
+          if (found) {
+            console.log(`Request ${identifier} already completed successfully.`);
+            return { status: 'already_completed', message: 'Request already completed successfully' };
+          }
+        } 
+        // For client context ID, we need to check differently
+        else {
+          const found = completedRequests.some(req => req.clientContextID === identifier);
+          if (found) {
+            console.log(`Request with client context ID ${identifier} already completed successfully.`);
+            return { status: 'already_completed', message: 'Request already completed successfully' };
+          }
+        }
+      } catch (checkError) {
+        console.warn('Error checking completed requests:', checkError.message);
+        // Continue with the normal error flow if we can't check completed requests
+      }
+    }
+    
     const customError = new Error(`Failed to cancel request ${identifier}: ${JSON.stringify(errorMsg)}`);
     customError.originalError = error;
     throw customError;
