@@ -191,79 +191,86 @@ function fetchCouchbaseMetadata() {
   const scopesCollections = {};
   
   try {
-    // For Columnar, we need to query system:keyspaces directly
-    const bucketQueryPayload = {
-      statement: "SELECT DISTINCT SPLIT_PART(keyspace_id, ':', 1) AS bucket FROM system:keyspaces WHERE SPLIT_PART(keyspace_id, ':', 1) != 'system';",
+    // First check if System.Metadata is accessible
+    Logger.log('fetchCouchbaseMetadata: Checking if System.Metadata is accessible');
+    const metadataCheckPayload = {
+      statement: "SELECT COUNT(*) as count FROM System.Metadata.`Dataset` LIMIT 1",
       timeout: "10000ms"
     };
     
-    // First get all buckets
-    options.payload = JSON.stringify(bucketQueryPayload);
-    Logger.log('fetchCouchbaseMetadata: Querying for buckets');
+    options.payload = JSON.stringify(metadataCheckPayload);
     
-    const bucketResponse = UrlFetchApp.fetch(queryUrl, options);
-    
-    if (bucketResponse.getResponseCode() === 200) {
-      const bucketData = JSON.parse(bucketResponse.getContentText());
-      
-      if (bucketData.results && Array.isArray(bucketData.results)) {
-        bucketNames = bucketData.results
-          .filter(item => item.bucket) // Filter out any null or undefined
-          .map(item => item.bucket);
-        
-        Logger.log('fetchCouchbaseMetadata: Found buckets: %s', bucketNames.join(', '));
-      } else {
-        Logger.log('fetchCouchbaseMetadata: Bucket query result format unexpected or empty.');
+    let hasSystemMetadata = false;
+    try {
+      const metadataCheckResponse = UrlFetchApp.fetch(queryUrl, options);
+      if (metadataCheckResponse.getResponseCode() === 200) {
+        const metadataCheckData = JSON.parse(metadataCheckResponse.getContentText());
+        if (metadataCheckData.results && metadataCheckData.results.length > 0) {
+          hasSystemMetadata = true;
+          Logger.log('fetchCouchbaseMetadata: System.Metadata is accessible');
+        }
       }
-    } else {
-      Logger.log('Error fetching buckets. Code: %s, Response: %s', 
-                bucketResponse.getResponseCode(), bucketResponse.getContentText());
+    } catch (e) {
+      Logger.log('fetchCouchbaseMetadata: Error checking System.Metadata access: %s', e.toString());
     }
     
-    // Now get all keyspaces
-    const keyspaceQueryPayload = {
-      statement: "SELECT keyspace_id FROM system:keyspaces WHERE SPLIT_PART(keyspace_id, ':', 1) != 'system';",
-      timeout: "10000ms"
-    };
-    
-    options.payload = JSON.stringify(keyspaceQueryPayload);
-    Logger.log('fetchCouchbaseMetadata: Querying for keyspaces');
-    
-    const keyspaceResponse = UrlFetchApp.fetch(queryUrl, options);
-    
-    if (keyspaceResponse.getResponseCode() === 200) {
-      const keyspaceData = JSON.parse(keyspaceResponse.getContentText());
-      Logger.log('fetchCouchbaseMetadata: Keyspace response received');
+    if (hasSystemMetadata) {
+      // Use System.Metadata approach
+      Logger.log('fetchCouchbaseMetadata: Using System.Metadata approach');
       
-      // Initialize bucket structures
-      bucketNames.forEach(bucket => {
-        scopesCollections[bucket] = {};
-      });
+      // Get databases (buckets)
+      const databaseQueryPayload = {
+        statement: "SELECT DISTINCT DatabaseName FROM System.Metadata.`Dataset`",
+        timeout: "10000ms"
+      };
       
-      if (keyspaceData.results && Array.isArray(keyspaceData.results)) {
-        keyspaceData.results.forEach(item => {
-          if (item.keyspace_id) {
-            const keyspaceParts = item.keyspace_id.split(':');
-            if (keyspaceParts.length >= 2) {
-              const bucket = keyspaceParts[0];
+      options.payload = JSON.stringify(databaseQueryPayload);
+      
+      const databaseResponse = UrlFetchApp.fetch(queryUrl, options);
+      
+      if (databaseResponse.getResponseCode() === 200) {
+        const databaseData = JSON.parse(databaseResponse.getContentText());
+        
+        if (databaseData.results && Array.isArray(databaseData.results)) {
+          bucketNames = databaseData.results
+            .filter(item => item.DatabaseName && item.DatabaseName !== 'System') // Filter out System database
+            .map(item => item.DatabaseName);
+          
+          Logger.log('fetchCouchbaseMetadata: Found databases/buckets: %s', bucketNames.join(', '));
+        }
+      }
+      
+      // Get all collections and their scope/bucket info
+      const collectionsQueryPayload = {
+        statement: "SELECT DatabaseName, DataverseName, DatasetName FROM System.Metadata.`Dataset` WHERE DatabaseName != 'System'",
+        timeout: "10000ms"
+      };
+      
+      options.payload = JSON.stringify(collectionsQueryPayload);
+      
+      const collectionsResponse = UrlFetchApp.fetch(queryUrl, options);
+      
+      if (collectionsResponse.getResponseCode() === 200) {
+        const collectionsData = JSON.parse(collectionsResponse.getContentText());
+        
+        if (collectionsData.results && Array.isArray(collectionsData.results)) {
+          Logger.log('fetchCouchbaseMetadata: Found %s collections in metadata', collectionsData.results.length);
+          
+          // Initialize bucket structures
+          bucketNames.forEach(bucket => {
+            scopesCollections[bucket] = {};
+          });
+          
+          // Process collections data
+          collectionsData.results.forEach(item => {
+            if (item.DatabaseName && item.DataverseName && item.DatasetName) {
+              const bucket = item.DatabaseName;
+              const scope = item.DataverseName;
+              const collection = item.DatasetName;
               
               // Skip non-matching buckets
               if (!bucketNames.includes(bucket)) {
                 return;
-              }
-              
-              // Parse scope and collection from keyspace_id
-              // Format is typically bucket:scope.collection
-              const scopeCollectionParts = keyspaceParts[1].split('.');
-              let scope, collection;
-              
-              if (scopeCollectionParts.length >= 2) {
-                scope = scopeCollectionParts[0];
-                collection = scopeCollectionParts[1];
-              } else {
-                // Default if format is unexpected
-                scope = '_default';
-                collection = scopeCollectionParts[0] || '_default';
               }
               
               // Initialize scope if not exists
@@ -278,14 +285,109 @@ function fetchCouchbaseMetadata() {
                           bucket, scope, collection);
               }
             }
-          }
-        });
-      } else {
-        Logger.log('fetchCouchbaseMetadata: Keyspace query result format unexpected or empty.');
+          });
+        }
       }
     } else {
-      Logger.log('Error fetching keyspaces. Code: %s, Response: %s', 
-                keyspaceResponse.getResponseCode(), keyspaceResponse.getContentText());
+      // Fall back to legacy approach
+      Logger.log('fetchCouchbaseMetadata: System.Metadata is not accessible, using legacy approach');
+      
+      // For Columnar, we need to query system:keyspaces directly
+      const bucketQueryPayload = {
+        statement: "SELECT DISTINCT SPLIT_PART(keyspace_id, ':', 1) AS bucket FROM system:keyspaces WHERE SPLIT_PART(keyspace_id, ':', 1) != 'system';",
+        timeout: "10000ms"
+      };
+      
+      // First get all buckets
+      options.payload = JSON.stringify(bucketQueryPayload);
+      Logger.log('fetchCouchbaseMetadata: Querying for buckets (legacy)');
+      
+      const bucketResponse = UrlFetchApp.fetch(queryUrl, options);
+      
+      if (bucketResponse.getResponseCode() === 200) {
+        const bucketData = JSON.parse(bucketResponse.getContentText());
+        
+        if (bucketData.results && Array.isArray(bucketData.results)) {
+          bucketNames = bucketData.results
+            .filter(item => item.bucket) // Filter out any null or undefined
+            .map(item => item.bucket);
+          
+          Logger.log('fetchCouchbaseMetadata: Found buckets: %s', bucketNames.join(', '));
+        } else {
+          Logger.log('fetchCouchbaseMetadata: Bucket query result format unexpected or empty.');
+        }
+      } else {
+        Logger.log('Error fetching buckets. Code: %s, Response: %s', 
+                  bucketResponse.getResponseCode(), bucketResponse.getContentText());
+      }
+      
+      // Now get all keyspaces
+      const keyspaceQueryPayload = {
+        statement: "SELECT keyspace_id FROM system:keyspaces WHERE SPLIT_PART(keyspace_id, ':', 1) != 'system';",
+        timeout: "10000ms"
+      };
+      
+      options.payload = JSON.stringify(keyspaceQueryPayload);
+      Logger.log('fetchCouchbaseMetadata: Querying for keyspaces (legacy)');
+      
+      const keyspaceResponse = UrlFetchApp.fetch(queryUrl, options);
+      
+      if (keyspaceResponse.getResponseCode() === 200) {
+        const keyspaceData = JSON.parse(keyspaceResponse.getContentText());
+        Logger.log('fetchCouchbaseMetadata: Keyspace response received');
+        
+        // Initialize bucket structures
+        bucketNames.forEach(bucket => {
+          scopesCollections[bucket] = {};
+        });
+        
+        if (keyspaceData.results && Array.isArray(keyspaceData.results)) {
+          keyspaceData.results.forEach(item => {
+            if (item.keyspace_id) {
+              const keyspaceParts = item.keyspace_id.split(':');
+              if (keyspaceParts.length >= 2) {
+                const bucket = keyspaceParts[0];
+                
+                // Skip non-matching buckets
+                if (!bucketNames.includes(bucket)) {
+                  return;
+                }
+                
+                // Parse scope and collection from keyspace_id
+                // Format is typically bucket:scope.collection
+                const scopeCollectionParts = keyspaceParts[1].split('.');
+                let scope, collection;
+                
+                if (scopeCollectionParts.length >= 2) {
+                  scope = scopeCollectionParts[0];
+                  collection = scopeCollectionParts[1];
+                } else {
+                  // Default if format is unexpected
+                  scope = '_default';
+                  collection = scopeCollectionParts[0] || '_default';
+                }
+                
+                // Initialize scope if not exists
+                if (!scopesCollections[bucket][scope]) {
+                  scopesCollections[bucket][scope] = [];
+                }
+                
+                // Add collection if not already added
+                if (!scopesCollections[bucket][scope].includes(collection)) {
+                  scopesCollections[bucket][scope].push(collection);
+                  Logger.log('fetchCouchbaseMetadata: Added: %s.%s.%s', 
+                            bucket, scope, collection);
+                }
+              }
+            }
+          });
+        } else {
+          Logger.log('fetchCouchbaseMetadata: Keyspace query result format unexpected or empty.');
+        }
+      } else {
+        Logger.log('Error fetching keyspaces. Code: %s, Response: %s', 
+                  keyspaceResponse.getResponseCode(), keyspaceResponse.getContentText());
+      }
     }
     
     // Add _default._default if no other collections were found for a bucket
