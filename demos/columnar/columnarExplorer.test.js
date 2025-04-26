@@ -37,6 +37,127 @@ function displayResults(response, label = 'Results') {
   }
 }
 
+// Function to list all buckets in Couchbase
+async function listBuckets() {
+  console.log('\n--- LISTING BUCKETS ---');
+  try {
+    const response = await executeQuery('SELECT DISTINCT ARRAY_AGG(DISTINCT REGEXP_REPLACE(keyspace_id, ":[^:]*$", ""))[0] AS bucket FROM system:keyspaces');
+    
+    if (response && response.results && response.results.length > 0) {
+      console.log('\nBuckets:');
+      const buckets = new Set();
+      
+      response.results.forEach(row => {
+        if (row.bucket) {
+          buckets.add(row.bucket);
+        }
+      });
+      
+      Array.from(buckets).sort().forEach((bucket, index) => {
+        console.log(`[${index + 1}] ${bucket}`);
+      });
+      
+      return Array.from(buckets);
+    } else {
+      console.log('No buckets found or query returned no results.');
+      return [];
+    }
+  } catch (error) {
+    console.error('Error listing buckets:', error.message);
+    return [];
+  }
+}
+
+// Function to list all scopes in a bucket
+async function listScopes(bucketName) {
+  console.log(`\n--- LISTING SCOPES IN BUCKET: ${bucketName} ---`);
+  try {
+    const response = await executeQuery(`SELECT DISTINCT ARRAY_AGG(DISTINCT REGEXP_REPLACE(REGEXP_REPLACE(keyspace_id, "${bucketName}:", ""), "\\.[^.]*$", ""))[0] AS scope FROM system:keyspaces WHERE keyspace_id LIKE "${bucketName}:%"`);
+    
+    if (response && response.results && response.results.length > 0) {
+      console.log(`\nScopes in bucket ${bucketName}:`);
+      const scopes = new Set();
+      
+      response.results.forEach(row => {
+        if (row.scope) {
+          scopes.add(row.scope);
+        }
+      });
+      
+      Array.from(scopes).sort().forEach((scope, index) => {
+        console.log(`[${index + 1}] ${scope}`);
+      });
+      
+      return Array.from(scopes);
+    } else {
+      console.log(`No scopes found in bucket ${bucketName} or query returned no results.`);
+      return [];
+    }
+  } catch (error) {
+    console.error('Error listing scopes:', error.message);
+    return [];
+  }
+}
+
+// Function to list all collections in a bucket and scope
+async function listCollections(bucketName, scopeName) {
+  console.log(`\n--- LISTING COLLECTIONS IN BUCKET: ${bucketName}, SCOPE: ${scopeName} ---`);
+  try {
+    const response = await executeQuery(`SELECT DISTINCT REGEXP_REPLACE(keyspace_id, "${bucketName}:${scopeName}\\.", "") AS collection FROM system:keyspaces WHERE keyspace_id LIKE "${bucketName}:${scopeName}.%"`);
+    
+    if (response && response.results && response.results.length > 0) {
+      console.log(`\nCollections in bucket ${bucketName}, scope ${scopeName}:`);
+      const collections = [];
+      
+      response.results.forEach(row => {
+        if (row.collection) {
+          collections.push(row.collection);
+        }
+      });
+      
+      collections.sort().forEach((collection, index) => {
+        console.log(`[${index + 1}] ${collection}`);
+      });
+      
+      return collections;
+    } else {
+      console.log(`No collections found in bucket ${bucketName}, scope ${scopeName} or query returned no results.`);
+      return [];
+    }
+  } catch (error) {
+    console.error('Error listing collections:', error.message);
+    return [];
+  }
+}
+
+// Function to explore database structure
+async function exploreDatabaseStructure() {
+  console.log('\n--- EXPLORING DATABASE STRUCTURE ---');
+  
+  // List all buckets
+  const buckets = await listBuckets();
+  
+  if (buckets.length > 0) {
+    // Choose a bucket to explore (travel-sample)
+    const travelSampleBucket = buckets.find(bucket => bucket === 'travel-sample');
+    
+    if (travelSampleBucket) {
+      // List scopes in the travel-sample bucket
+      const scopes = await listScopes(travelSampleBucket);
+      
+      if (scopes.length > 0) {
+        // Choose a scope to explore (inventory)
+        const inventoryScope = scopes.find(scope => scope === 'inventory');
+        
+        if (inventoryScope) {
+          // List collections in the travel-sample.inventory scope
+          await listCollections(travelSampleBucket, inventoryScope);
+        }
+      }
+    }
+  }
+}
+
 // Explore the travel-sample bucket structure
 async function exploreTravelSample() {
   console.log('\n--- EXPLORING TRAVEL SAMPLE DATA ---');
@@ -68,10 +189,10 @@ async function runAnalysisQueries() {
   
   // Get count of airlines by country
   const countriesResponse = await executeQuery(`
-    SELECT a.airline.country as country, COUNT(*) as airline_count 
-    FROM \`travel-sample\`.inventory.airline a 
-    WHERE a.airline.country IS NOT NULL 
-    GROUP BY a.airline.country 
+    SELECT country, COUNT(*) as airline_count 
+    FROM \`travel-sample\`.inventory.airline 
+    WHERE country IS NOT NULL 
+    GROUP BY country 
     ORDER BY COUNT(*) DESC 
     LIMIT 10
   `);
@@ -79,27 +200,27 @@ async function runAnalysisQueries() {
   
   // Find airports in United States
   const usAirportsResponse = await executeQuery(`
-    SELECT a.airport.city, a.airport.airportname, a.airport.country
-    FROM \`travel-sample\`.inventory.airport a
-    WHERE a.airport.country = "United States"
+    SELECT city, airportname, country
+    FROM \`travel-sample\`.inventory.airport
+    WHERE country = "United States"
     LIMIT 10
   `);
   displayResults(usAirportsResponse, 'US Airports');
   
   // Find routes from San Francisco
   const sfRoutesResponse = await executeQuery(`
-    SELECT r.route.airline, r.route.sourceairport, r.route.destinationairport, r.route.stops
-    FROM \`travel-sample\`.inventory.route r
-    WHERE r.route.sourceairport = "SFO"
+    SELECT airline, sourceairport, destinationairport, stops
+    FROM \`travel-sample\`.inventory.route
+    WHERE sourceairport = "SFO"
     LIMIT 10
   `);
   displayResults(sfRoutesResponse, 'Routes from SFO');
   
   // Find hotels in London
   const londonHotelsResponse = await executeQuery(`
-    SELECT h.hotel.name, h.hotel.address, h.hotel.phone
-    FROM \`travel-sample\`.inventory.hotel h
-    WHERE h.hotel.city = "London"
+    SELECT name, address, phone
+    FROM \`travel-sample\`.inventory.hotel
+    WHERE city = "London"
     LIMIT 10
   `);
   displayResults(londonHotelsResponse, 'London Hotels');
@@ -111,15 +232,15 @@ async function runJoinQueries() {
   
   // Join airports and routes to find destinations from San Francisco
   const sfoJoinResponse = await executeQuery(`
-    SELECT a.airport.airportname as destination, 
-           a.airport.city as destination_city,
-           a.airport.country as destination_country,
-           r.route.airline as airline,
-           r.route.stops as stops
+    SELECT a.airportname as destination, 
+           a.city as destination_city,
+           a.country as destination_country,
+           r.airline as airline,
+           r.stops as stops
     FROM \`travel-sample\`.inventory.route r
     JOIN \`travel-sample\`.inventory.airport a
-    ON r.route.destinationairport = a.airport.faa
-    WHERE r.route.sourceairport = "SFO"
+    ON r.destinationairport = a.faa
+    WHERE r.sourceairport = "SFO"
     LIMIT 10
   `);
   displayResults(sfoJoinResponse, 'Destinations from SFO with Airport Details');
@@ -138,6 +259,9 @@ async function runExplorer() {
       console.error('Basic connectivity test failed. Cannot continue.');
       return;
     }
+    
+    // Explore database structure - buckets, scopes, collections
+    await exploreDatabaseStructure();
     
     // Explore the travel-sample bucket structure
     await exploreTravelSample();
@@ -163,6 +287,10 @@ if (require.main === module) {
 module.exports = {
   executeQuery,
   displayResults,
+  listBuckets,
+  listScopes,
+  listCollections,
+  exploreDatabaseStructure,
   exploreTravelSample,
   runAnalysisQueries,
   runJoinQueries,
