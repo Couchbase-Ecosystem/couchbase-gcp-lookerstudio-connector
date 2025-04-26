@@ -20,3 +20,9 @@ ehthumbs.db
 Thumbs.db
 
 logs/
+
+# Environment variables for demos
+.env
+
+# Node modules
+node_modules/

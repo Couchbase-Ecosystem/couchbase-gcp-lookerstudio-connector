@@ -19,30 +19,30 @@ function getAuthType() {
 }
 
 /**
- * Attempts to validate credentials by making a minimal query to Couchbase.
+ * Attempts to validate credentials by making a minimal query to Couchbase Analytics.
  * Called by isAuthValid.
  */
 function validateCredentials(path, username, password) {
   // Log the raw path received from isAuthValid
   Logger.log('validateCredentials received path: %s', path);
   
-  Logger.log('Attempting to validate credentials for path: %s, username: %s', path, username);
+  Logger.log('Attempting to validate credentials against Analytics Service for path: %s, username: %s', path, username);
   if (!path || !username || !password) {
     Logger.log('Validation failed: Missing path, username, or password.');
     return false; 
   }
 
-  // Construct the base API URL using the helper function
-  const apiBaseUrl = constructApiUrl(path, 18093); // Default query port is 18093
-  Logger.log('validateCredentials: Constructed API Base URL: %s', apiBaseUrl);
+  // Construct the base API URL using the helper function for Analytics (port 18095)
+  const apiBaseUrl = constructApiUrl(path, 18095); // Default Analytics port is 18095
+  Logger.log('validateCredentials: Constructed Analytics API Base URL: %s', apiBaseUrl);
 
-  const queryUrl = apiBaseUrl + '/query/service'; // Append the service path
+  const queryUrl = apiBaseUrl + '/analytics/service'; // Use Analytics service path
   // Log the final URL being used for the fetch call
-  Logger.log('validateCredentials constructed queryUrl: %s', queryUrl);
-  Logger.log('Validation query URL (using port 18093): %s', queryUrl);
+  Logger.log('validateCredentials constructed Analytics queryUrl: %s', queryUrl);
+  Logger.log('Validation query URL (using port 18095): %s', queryUrl);
 
   const queryPayload = {
-    statement: 'SELECT 1;',
+    statement: 'SELECT 1;', // Simple query compatible with Analytics
     timeout: '5s'
   };
 
@@ -740,7 +740,7 @@ function getData(request) {
 }
 
 /**
- * Fetches data from Couchbase using the provided configuration.
+ * Fetches data from Couchbase Analytics using the provided configuration.
  */
 function fetchData(configParams) {
   // Get credentials and URL from configParams (populated by validateConfig)
@@ -753,30 +753,23 @@ function fetchData(configParams) {
      throw new Error('Configuration error: Connection details missing.');
   }
 
-  const bucket = configParams.bucket; // May be undefined if using custom query directly
-  const scope = configParams.scope || '_default'; // May be undefined if using custom query directly
+  // Bucket and scope are not directly used in Analytics API call payload
   const query = configParams.query; 
   const timeout = 30000; 
 
-  // Construct the base API URL using the helper function
-  const apiBaseUrl = constructApiUrl(baseUrl, 18093); // Default query port is 18093
-  Logger.log('fetchData: Constructed API Base URL: %s', apiBaseUrl);
+  // Construct the base API URL using the helper function for Analytics (port 18095)
+  const apiBaseUrl = constructApiUrl(baseUrl, 18095); // Default Analytics port is 18095
+  Logger.log('fetchData: Constructed Analytics API Base URL: %s', apiBaseUrl);
   
-  const queryUrl = apiBaseUrl + '/query/service'; // Append the service path
+  const queryUrl = apiBaseUrl + '/analytics/service'; // Use Analytics service path
   
   const queryPayload = {
     statement: query,
     timeout: timeout + "ms"
   };
 
-  // Add query_context only if bucket and scope are available (i.e., not a direct custom query)
-  if (bucket && scope) {
-      let queryContext = `default:\`${bucket}\`.\`${scope}\``;
-      queryPayload.query_context = queryContext;
-      Logger.log('fetchData: Using query context: %s', queryContext);
-  } else {
-      Logger.log('fetchData: Not using query context (likely custom query).');
-  }
+  // query_context is not typically used for Analytics API
+  Logger.log('fetchData: Analytics API call does not use query_context.');
 
   const options = {
     method: 'post',
@@ -822,10 +815,11 @@ function fetchData(configParams) {
 
 /**
  * Constructs a full API URL from a user-provided path, ensuring HTTPS
- * and adding a default port if none is specified.
+ * and adding a default port if none is specified, *except* for Capella URLs.
  */
 function constructApiUrl(path, defaultPort) {
   let hostAndPort = path;
+  const isCapella = path.includes('cloud.couchbase.com');
 
   // Standardize scheme and strip it
   if (hostAndPort.startsWith('couchbases://')) {
@@ -839,13 +833,19 @@ function constructApiUrl(path, defaultPort) {
   }
 
   // Remove trailing slash if present
-  hostAndPort = hostAndPort.replace(/$/, '');
+  hostAndPort = hostAndPort.replace(/\/$/, '');
 
   // Check if port is already present (handles IPv4 and IPv6)
   const hasPort = /:\d+$|]:\d+$/.test(hostAndPort);
 
-  if (!hasPort && defaultPort) {
+  // Add default port ONLY if it's not Capella and no port is specified
+  if (!isCapella && !hasPort && defaultPort) {
     hostAndPort += ':' + defaultPort;
+    Logger.log('constructApiUrl: Added default port %s for non-Capella URL.', defaultPort);
+  } else if (isCapella) {
+     Logger.log('constructApiUrl: Using standard HTTPS port (443 implied) for Capella URL: %s', hostAndPort);
+  } else if (hasPort) {
+     Logger.log('constructApiUrl: Port already present in URL: %s', hostAndPort);
   }
 
   return 'https://' + hostAndPort;

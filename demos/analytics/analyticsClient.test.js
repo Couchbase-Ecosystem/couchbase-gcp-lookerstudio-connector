@@ -1,4 +1,5 @@
 // testClient.js
+require('dotenv').config(); // Load environment variables from .env file
 
 // Import the client functions
 const {
@@ -10,20 +11,19 @@ const {
     createLink,
     updateLink,
     deleteLink
-} = require('./couchbaseColumnarClient');
+} = require('./analyticsClient');
 
 // --- Configuration --- 
-// !!! IMPORTANT: Replace this with your actual Couchbase Columnar API endpoint !!!
-// const API_BASE_URL = 'http://YOUR_COUCHBASE_API_ENDPOINT'; 
-const API_BASE_URL = 'http://localhost:8095'; 
+// API Base URL is now preferentially loaded from .env, otherwise uses the default.
+const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:8095';
 // Example authorization (uncomment and adapt if needed)
 // const AUTH_TOKEN = 'Bearer your_token_here'; 
 // You would need to modify the client functions to accept and use headers like Authorization
 
 // --- Credentials --- 
-// !!! IMPORTANT: Replace these with your actual Couchbase credentials !!!
-const CB_USERNAME = 'kaustav'; // Replace with your Couchbase username
-const CB_PASSWORD = 'password'; // Replace with your Couchbase password
+// Credentials are now loaded from the .env file
+const CB_USERNAME = process.env.CB_USERNAME;
+const CB_PASSWORD = process.env.CB_PASSWORD;
 
 // --- Test Functions --- 
 
@@ -52,8 +52,14 @@ async function testSubmitAndTrack() {
     }
 
     if (!requestId) {
-        console.warn('Could not determine request ID from submit response. Skipping active/cancel tests.');
+        console.warn('\n!!! WARNING: Could not determine request ID from submit response. Skipping active/cancel tests.');
         return;
+    }
+
+    // Check if credentials were loaded
+    if (!CB_USERNAME || !CB_PASSWORD) {
+        console.error("Error: CB_USERNAME or CB_PASSWORD not found in .env file or environment variables.");
+        return; // Stop if credentials are missing
     }
 
     console.log('\n--- Testing Get Active Requests ---');
@@ -166,11 +172,10 @@ async function testLinkManagement() {
 // --- Main Execution --- 
 async function runTests() {
     console.log(`Starting tests against: ${API_BASE_URL}`);
-    if (API_BASE_URL.includes('YOUR_COUCHBASE_API_ENDPOINT')) {
-        console.warn('\n!!! WARNING: API_BASE_URL is set to the placeholder value. Tests will likely fail. Edit testClient.js to set the correct URL. !!!\n');
-    }
-    if (CB_USERNAME === 'YOUR_USERNAME' || CB_PASSWORD === 'YOUR_PASSWORD') {
-         console.warn('\n!!! WARNING: Credentials are set to placeholder values. Tests will likely fail. Edit testClient.js to set the correct username and password. !!!\n');
+    if (!CB_USERNAME || !CB_PASSWORD) {
+         console.warn('\n!!! WARNING: Couchbase credentials (CB_USERNAME, CB_PASSWORD) were not found in your .env file or environment variables. Tests will likely fail. Please ensure the .env file exists in the demos/analytics directory and contains the correct credentials. !!!\n');
+    } else {
+        console.log(`Using username: ${CB_USERNAME}`); // Avoid logging password
     }
     
     await testSubmitAndTrack();
