@@ -535,40 +535,15 @@ function validateConfig(configParams) {
 
 /**
  * Returns the schema for the given request.
- * 
- * @param {Object} request Schema request parameters.
- * @return {Object} Schema for the given request.
+ *
+ * @param {Object} request The request.
+ * @return {Object} The schema response.
  */
 function getSchema(request) {
-  Logger.log('getSchema called with request: %s', JSON.stringify(request));
+  Logger.log('getSchema request: %s', JSON.stringify(request));
   
   try {
-    const configParams = request.configParams;
-    
-    // If schema fields are provided in the configuration, use them
-    if (configParams && configParams.schemaFields) {
-      try {
-        const schemaFields = JSON.parse(configParams.schemaFields);
-        Logger.log('Using predefined schema fields: %s', JSON.stringify(schemaFields));
-        return { schema: schemaFields };
-      } catch (e) {
-        Logger.log('Error parsing schema fields: %s', e.message);
-        throwUserError('Invalid schema fields format: ' + e.message);
-      }
-    }
-    
-    // Otherwise, try to infer the schema from a sample query
-    if (!configParams) {
-      // Return a default schema if no configuration is provided
-      return {
-        schema: [
-          { name: 'id', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' } },
-          { name: 'value', dataType: 'NUMBER', semantics: { conceptType: 'METRIC' } }
-        ]
-      };
-    }
-    
-    // Get credentials
+    // Get credentials from user properties
     const userProperties = PropertiesService.getUserProperties();
     const path = userProperties.getProperty('dscc.path');
     const username = userProperties.getProperty('dscc.username');
@@ -579,147 +554,247 @@ function getSchema(request) {
       throwUserError('Authentication credentials missing. Please reauthenticate.');
     }
     
-    // Determine the query to execute for schema detection
-    // We'll use LIMIT 1 to get just one row for schema detection
-    let query;
+    // Check for provided schema fields
+    const configParams = request.configParams || {};
+    if (configParams.schemaFields && configParams.schemaFields.trim() !== '') {
+      try {
+        const schemaFields = JSON.parse(configParams.schemaFields);
+        Logger.log('Using provided schema fields: %s', configParams.schemaFields);
+        return { schema: schemaFields };
+      } catch (e) {
+        Logger.log('Error parsing schema fields: %s', e.message);
+        // Continue to infer schema if provided schema is invalid
+      }
+    }
+    
+    // Helper function to process fields from an object
+    function processFields(obj, prefix = '') {
+      const fields = [];
+      
+      // Handle null objects
+      if (obj === null || obj === undefined) {
+        return [{
+          name: prefix || 'value',
+          label: prefix || 'Value',
+          dataType: 'STRING',
+          semantics: {
+            conceptType: 'DIMENSION'
+          }
+        }];
+      }
+      
+      // Process based on type
+      if (Array.isArray(obj)) {
+        // For arrays, examine the first element if it exists
+        if (obj.length > 0) {
+          if (typeof obj[0] === 'object' && obj[0] !== null) {
+            // For arrays of objects, process each field in the first object
+            const arrayFields = processFields(obj[0], prefix);
+            return arrayFields.map(field => {
+              // Mark array fields
+              field.name = prefix ? `${prefix}[0].${field.name.split('.').pop()}` : field.name;
+              field.label = field.name;
+              return field;
+            });
+          } else {
+            // For arrays of primitives, create a single field
+            return [{
+              name: prefix || 'array',
+              label: prefix || 'Array',
+              dataType: getDataType(obj[0]),
+              semantics: {
+                conceptType: 'DIMENSION'
+              }
+            }];
+          }
+        } else {
+          // Empty array
+          return [{
+            name: prefix || 'array',
+            label: prefix || 'Array',
+            dataType: 'STRING',
+            semantics: {
+              conceptType: 'DIMENSION'
+            }
+          }];
+        }
+      } else if (typeof obj === 'object') {
+        // Process each property in the object
+        Object.keys(obj).forEach(key => {
+          const value = obj[key];
+          const newPrefix = prefix ? `${prefix}.${key}` : key;
+          
+          if (value === null || value === undefined) {
+            fields.push({
+              name: newPrefix,
+              label: newPrefix,
+              dataType: 'STRING',
+              semantics: {
+                conceptType: 'DIMENSION'
+              }
+            });
+          } else if (typeof value === 'object') {
+            // Recursively process nested objects
+            fields.push(...processFields(value, newPrefix));
+          } else {
+            // Add field for primitive values
+            fields.push({
+              name: newPrefix,
+              label: newPrefix,
+              dataType: getDataType(value),
+              semantics: {
+                conceptType: getConceptType(value, getDataType(value))
+              }
+            });
+          }
+        });
+        
+        return fields;
+      } else {
+        // Handle primitive value
+        return [{
+          name: prefix || 'value',
+          label: prefix || 'Value',
+          dataType: getDataType(obj),
+          semantics: {
+            conceptType: getConceptType(obj, getDataType(obj))
+          }
+        }];
+      }
+    }
+    
+    // Helper function to determine Data Studio data type
+    function getDataType(value) {
+      const type = typeof value;
+      
+      if (value === null || value === undefined) {
+        return 'STRING';
+      } else if (type === 'number') {
+        return Number.isInteger(value) ? 'NUMBER' : 'NUMBER';
+      } else if (type === 'boolean') {
+        return 'BOOLEAN';
+      } else if (type === 'string') {
+        // Check if string is a date
+        const dateRegex = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?$/;
+        if (dateRegex.test(value)) {
+          return 'STRING'; // Using STRING for dates as DATE/TIME can be problematic
+        }
+        return 'STRING';
+      } else {
+        return 'STRING'; // Default for objects and arrays
+      }
+    }
+    
+    // Helper function to determine concept type
+    function getConceptType(value, dataType) {
+      if (dataType === 'NUMBER') {
+        return 'METRIC';
+      } else if (dataType === 'BOOLEAN') {
+        return 'DIMENSION';
+      } else {
+        return 'DIMENSION';
+      }
+    }
+    
+    // Infer schema by running a sample query
+    let sampleQuery = '';
+    
     if (configParams.query && configParams.query.trim() !== '') {
-      // Add a LIMIT 1 clause if not already present
-      const baseQuery = configParams.query.trim();
-      query = baseQuery.toLowerCase().includes('limit') ? 
-        baseQuery : 
-        `${baseQuery} LIMIT 1`;
-    } else if (configParams.collection) {
-      // Collection path needs to be properly formatted with separate backticks for each part
+      // If a custom query is provided, add LIMIT 1 if not present
+      sampleQuery = configParams.query.trim();
+      
+      if (!sampleQuery.toLowerCase().includes('limit')) {
+        sampleQuery += ' LIMIT 1';
+      } else {
+        // Modify existing LIMIT clause to limit 1
+        sampleQuery = sampleQuery.replace(/LIMIT\s+\d+/i, 'LIMIT 1');
+      }
+    } else if (configParams.collection && configParams.collection.trim() !== '') {
+      // Construct query based on collection
       const collectionParts = configParams.collection.split('.');
       
       if (collectionParts.length === 3) {
-        // Properly format as `bucket`.`scope`.`collection`
-        query = `SELECT * FROM \`${collectionParts[0]}\`.\`${collectionParts[1]}\`.\`${collectionParts[2]}\` LIMIT 1`;
+        sampleQuery = `SELECT * FROM \`${collectionParts[0]}\`.\`${collectionParts[1]}\`.\`${collectionParts[2]}\` LIMIT 1`;
       } else {
-        // Fallback if the format is unexpected
-        query = `SELECT * FROM \`${configParams.collection}\` LIMIT 1`;
+        sampleQuery = `SELECT * FROM \`${configParams.collection}\` LIMIT 1`;
       }
     } else {
-      throwUserError('Configuration Error: No query or collection specified');
+      throwUserError('Either collection or custom query must be specified to infer schema.');
     }
     
-    Logger.log('Schema detection query: %s', query);
+    Logger.log('Schema detection query: %s', sampleQuery);
     
-    // Use constructApiUrl for consistent URL handling
+    // Construct the API URL
     const columnarUrl = constructApiUrl(path, 18095);
-    const queryUrl = columnarUrl + '/api/v1/request';
+    const apiUrl = columnarUrl + '/api/v1/request';
     
-    // Set up the API request payload
+    // Setup the API request
     const payload = {
-      statement: query,
-      timeout: '10s'
+      statement: sampleQuery,
+      timeout: '30s'
     };
     
-    // Create authentication header value
-    const auth = Utilities.base64Encode(`${username}:${password}`);
-    
-    // Set up the API request options
     const options = {
       method: 'post',
       contentType: 'application/json',
       headers: {
-        'Authorization': 'Basic ' + auth
+        'Authorization': 'Basic ' + Utilities.base64Encode(username + ':' + password)
       },
       payload: JSON.stringify(payload),
       muteHttpExceptions: true,
       validateHttpsCertificates: false
     };
     
-    // Execute the request
-    Logger.log('Executing schema detection request to %s', queryUrl);
-    const response = UrlFetchApp.fetch(queryUrl, options);
-    
-    // Check response code
+    // Make the API request
+    const response = UrlFetchApp.fetch(apiUrl, options);
     const responseCode = response.getResponseCode();
+    
     if (responseCode !== 200) {
       const errorText = response.getContentText();
-      Logger.log('API error in schema detection: %s, Error: %s', responseCode, errorText);
+      Logger.log('API error in getSchema: %s, Error: %s', responseCode, errorText);
       throwUserError(`Couchbase API error (${responseCode}): ${errorText}`);
     }
     
     // Parse the response
-    const responseText = response.getContentText();
+    const responseBody = response.getContentText();
     let parsedResponse;
     
     try {
-      parsedResponse = JSON.parse(responseText);
+      parsedResponse = JSON.parse(responseBody);
     } catch (e) {
-      Logger.log('Error parsing API response for schema: %s', e.message);
+      Logger.log('Error parsing API response: %s', e.message);
       throwUserError('Invalid response from Couchbase API: ' + e.message);
     }
     
-    // Extract the results - we should have at least one row for schema detection
+    // Process the results
     const results = parsedResponse.results || [];
     
-    if (results.length === 0) {
-      Logger.log('No data returned for schema detection');
+    if (results.length > 0) {
+      // Use the first row to infer schema
+      const firstRow = results[0];
+      const fields = processFields(firstRow);
+      
+      Logger.log('Inferred schema: %s', JSON.stringify(fields));
+      return { schema: fields };
+    } else {
+      // No results returned, provide default schema
+      Logger.log('No results returned from sample query, returning default schema');
       return {
         schema: [
-          { name: 'id', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' } },
-          { name: 'value', dataType: 'NUMBER', semantics: { conceptType: 'METRIC' } }
+          {
+            name: configParams.collection || 'value',
+            label: configParams.collection || 'Value',
+            dataType: 'STRING',
+            semantics: {
+              conceptType: 'DIMENSION'
+            }
+          }
         ]
       };
     }
-    
-    // Infer the schema from the first row
-    const firstRow = results[0];
-    const fields = [];
-    
-    // Process each field in the result to determine its data type
-    // Format according to Looker Studio requirements in looker-studio.txt and looker-studio-config.txt
-    Object.keys(firstRow).forEach(key => {
-      const value = firstRow[key];
-      let dataType = 'STRING';
-      let conceptType = 'DIMENSION';
-      
-      // Determine data type based on the value
-      if (value === null || value === undefined) {
-        dataType = 'STRING';
-      } else if (typeof value === 'number') {
-        dataType = 'NUMBER';
-        conceptType = 'METRIC';
-        // Add isReaggregatable for metrics as shown in looker-studio.txt
-        fields.push({
-          name: key,
-          label: key,
-          dataType: dataType,
-          semantics: { 
-            conceptType: conceptType,
-            isReaggregatable: true
-          }
-        });
-        return; // Skip the normal push at the end
-      } else if (typeof value === 'boolean') {
-        dataType = 'BOOLEAN';
-      } else if (value instanceof Date || (typeof value === 'string' && !isNaN(Date.parse(value)))) {
-        dataType = 'STRING';
-        conceptType = 'DIMENSION';
-      } else if (typeof value === 'object') {
-        // Objects and arrays are converted to strings
-        dataType = 'STRING';
-      }
-      
-      fields.push({
-        name: key,
-        label: key,
-        dataType: dataType,
-        semantics: { conceptType: conceptType }
-      });
-    });
-    
-    Logger.log('Inferred schema: %s', JSON.stringify(fields));
-    return { schema: fields };
   } catch (e) {
     Logger.log('Error in getSchema: %s', e.message);
-    if (e.name === 'UserError') {
-      throw e;
-    }
-    throwUserError(`Error getting schema: ${e.message}`);
+    throwUserError(`Error inferring schema: ${e.message}`);
   }
 }
 
@@ -844,14 +919,14 @@ function buildSchema(result) {
 }
 
 /**
- * Returns tabular data for the given request.
+ * Returns the data for the given request.
  *
- * @param {Object} request The request object.
- * @return {Object} The response object containing the data.
+ * @param {Object} request The request.
+ * @return {Object} The data response.
  */
 function getData(request) {
   Logger.log('getData request: %s', JSON.stringify(request));
-
+  
   try {
     // Get credentials from user properties
     const userProperties = PropertiesService.getUserProperties();
@@ -865,72 +940,66 @@ function getData(request) {
     }
     
     // Get configuration
-    const configParams = request.configParams;
-    if (!configParams) {
-      throwUserError('No configuration provided');
-    }
+    const configParams = request.configParams || {};
     
-    // Check required config parameters
     if ((!configParams.collection || configParams.collection.trim() === '') && 
         (!configParams.query || configParams.query.trim() === '')) {
-      throwUserError('Either a collection or a custom query must be specified');
+      throwUserError('Either collection or custom query must be specified.');
     }
     
-    // Get requested fields from the request
-    const requestedFields = request.fields || [];
-    const maxRows = configParams.maxRows && parseInt(configParams.maxRows) > 0 ? 
-                   parseInt(configParams.maxRows) : 1000;
+    // Get requested fields
+    const requestedFields = getRequestedFields(request);
+    Logger.log('Requested fields: %s', JSON.stringify(requestedFields.asArray()));
     
-    // Initialize fields schema
-    let dataSchema = [];
-    
-    // For each requested field, find the matching schema field
-    // Based on looker-studio2.txt example
-    requestedFields.forEach(function(field) {
-      // Find the schema definition for this field
-      for (const schemaField of getSchema(request).schema) {
-        if (schemaField.name === field.name) {
-          dataSchema.push(schemaField);
-          break;
-        }
-      }
-    });
+    // Determine max rows
+    const maxRows = parseInt(configParams.maxRows, 10) || 1000;
     
     // Construct the API URL
     const columnarUrl = constructApiUrl(path, 18095);
     const apiUrl = columnarUrl + '/api/v1/request';
-    Logger.log('API URL: %s', apiUrl);
     
-    // Construct query
-    let query;
+    // Check if there are nested fields in the requested fields
+    const hasNestedFields = requestedFields.asArray().some(field => field.name.includes('.') || field.name.includes('['));
+    
+    // Prepare the query
+    let query = '';
     
     if (configParams.query && configParams.query.trim() !== '') {
-      // Use the provided custom SQL query
+      // Use custom query
       query = configParams.query.trim();
       
-      // Add a LIMIT clause if maxRows is specified and not already present
-      if (maxRows && !query.toLowerCase().includes('limit')) {
+      // Add LIMIT clause if not present
+      if (!query.toLowerCase().includes('limit')) {
         query += ` LIMIT ${maxRows}`;
       }
     } else {
-      // Get the field names for the query
-      const fieldList = requestedFields.map(field => 
-        `\`${field.name}\``
-      ).join(', ');
-      
-      // Collection path needs to be properly formatted with separate backticks for each part
+      // Construct SQL query based on collection and requested fields
       const collectionParts = configParams.collection.split('.');
+      let collection = configParams.collection;
       
       if (collectionParts.length === 3) {
-        // Properly format as `bucket`.`scope`.`collection`
-        query = `SELECT ${fieldList} FROM \`${collectionParts[0]}\`.\`${collectionParts[1]}\`.\`${collectionParts[2]}\``;
+        collection = `\`${collectionParts[0]}\`.\`${collectionParts[1]}\`.\`${collectionParts[2]}\``;
       } else {
-        // Fallback if the format is unexpected
-        query = `SELECT ${fieldList} FROM \`${configParams.collection}\``;
+        collection = `\`${configParams.collection}\``;
       }
       
-      // Add a LIMIT clause
-      query += ` LIMIT ${maxRows}`;
+      // If there are nested fields, select entire document
+      if (hasNestedFields) {
+        query = `SELECT * FROM ${collection} LIMIT ${maxRows}`;
+      } else {
+        // If no nested fields, select only the requested fields
+        const fieldNames = requestedFields.asArray().map(field => {
+          // Escape field names with backticks
+          return `\`${field.name}\``;
+        }).join(', ');
+        
+        // If no fields requested, select all
+        if (fieldNames === '') {
+          query = `SELECT * FROM ${collection} LIMIT ${maxRows}`;
+        } else {
+          query = `SELECT ${fieldNames} FROM ${collection} LIMIT ${maxRows}`;
+        }
+      }
     }
     
     Logger.log('Executing query: %s', query);
@@ -938,7 +1007,7 @@ function getData(request) {
     // Setup the API request
     const payload = {
       statement: query,
-      timeout: '30s'
+      timeout: '60s'  // Increased timeout for larger queries
     };
     
     const options = {
@@ -952,63 +1021,79 @@ function getData(request) {
       validateHttpsCertificates: false
     };
     
-    Logger.log('Making API request with options: %s', JSON.stringify({
-      url: apiUrl,
-      method: options.method,
-      headers: options.headers
-    }));
-    
     // Make the API request
     const response = UrlFetchApp.fetch(apiUrl, options);
     const responseCode = response.getResponseCode();
-    const responseBody = response.getContentText();
-    
-    Logger.log('Response code: %s', responseCode);
     
     if (responseCode !== 200) {
-      Logger.log('Error response: %s', responseBody);
-      throwUserError(`Error from Couchbase Columnar API: ${responseBody}`);
+      const errorText = response.getContentText();
+      Logger.log('API error in getData: %s, Error: %s', responseCode, errorText);
+      throwUserError(`Couchbase API error (${responseCode}): ${errorText}`);
     }
     
-    const parsedResponse = JSON.parse(responseBody);
+    // Parse the response
+    const responseBody = response.getContentText();
+    let parsedResponse;
     
-    if (parsedResponse.status === 'errors') {
-      Logger.log('API reported errors: %s', JSON.stringify(parsedResponse.errors));
-      throwUserError(`Query error: ${parsedResponse.errors[0].message}`);
+    try {
+      parsedResponse = JSON.parse(responseBody);
+    } catch (e) {
+      Logger.log('Error parsing API response: %s', e.message);
+      throwUserError('Invalid response from Couchbase API: ' + e.message);
     }
     
-    // Format results based on Looker Studio requirements - similar to looker-studio2.txt example
+    // Helper function to get nested values
+    function getNestedValue(obj, path) {
+      const parts = path.replace(/\[(\d+)\]/g, '.$1').split('.');
+      let current = obj;
+      
+      for (let i = 0; i < parts.length; i++) {
+        if (current === null || current === undefined) {
+          return null;
+        }
+        current = current[parts[i]];
+      }
+      
+      return current;
+    }
+    
+    // Process the results
+    const results = parsedResponse.results || [];
     const rows = [];
     
-    // Process each row of data
-    if (parsedResponse.results && Array.isArray(parsedResponse.results)) {
-      parsedResponse.results.forEach(function(item) {
-        const row = [];
-        
-        // Add the value for each requested field
-        requestedFields.forEach(function(field) {
-          const fieldName = field.name;
-          let value = item[fieldName];
+    results.forEach(result => {
+      const values = [];
+      
+      requestedFields.asArray().forEach(field => {
+        // Handle nested fields
+        if (field.name.includes('.') || field.name.includes('[')) {
+          const value = getNestedValue(result, field.name);
           
-          // Handle null values
           if (value === null || value === undefined) {
-            row.push('');
-          } else if (typeof value === 'number') {
-            row.push(value);
-          } else if (typeof value === 'boolean') {
-            row.push(value);
+            values.push('');
+          } else if (typeof value === 'object') {
+            values.push(JSON.stringify(value));
           } else {
-            row.push(String(value));
+            values.push(value.toString());
           }
-        });
-        
-        rows.push({ values: row });
+        } else {
+          const value = result[field.name];
+          
+          if (value === null || value === undefined) {
+            values.push('');
+          } else if (typeof value === 'object') {
+            values.push(JSON.stringify(value));
+          } else {
+            values.push(value.toString());
+          }
+        }
       });
-    }
+      
+      rows.push({ values });
+    });
     
-    // Return data in the format required by Looker Studio
     return {
-      schema: dataSchema,
+      schema: requestedFields.build(),
       rows: rows
     };
   } catch (e) {
