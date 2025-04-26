@@ -1,7 +1,8 @@
 // demos/sampleQueries.js
 
 // Load environment variables from .env file in the same directory
-require('dotenv').config({ path: __dirname + '/.env' });
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
 // Example of how to run a N1QL query using the Couchbase Query Service REST API
 // This uses the standard `fetch` API, similar to how connector.js works,

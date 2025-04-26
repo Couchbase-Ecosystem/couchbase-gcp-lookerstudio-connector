@@ -1,5 +1,4 @@
-// testClient.js
-require('dotenv').config(); // Load environment variables from .env file
+
 
 // Import the client functions
 const {
@@ -12,6 +11,9 @@ const {
     updateLink,
     deleteLink
 } = require('./analyticsClient');
+
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
 // --- Configuration --- 
 // API Base URL is now preferentially loaded from .env, otherwise uses the default.
