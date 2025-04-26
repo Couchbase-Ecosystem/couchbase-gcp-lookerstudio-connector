@@ -541,27 +541,31 @@ function validateConfig(configParams) {
  */
 function getRequestedFields(request) {
   const cc = DataStudioApp.createCommunityConnector();
-  const fields = cc.getFields();
+  const requestedFields = cc.getFields(); // Start with an empty Fields object
   const requestedFieldIds = request.fields.map(field => field.name);
   
-  Logger.log('Requested field IDs: %s', JSON.stringify(requestedFieldIds));
-  
-  // Add all requested fields to the fields object
-  requestedFieldIds.forEach(fieldId => {
-    // Check if this field already exists in our connector's field definitions
-    try {
-      fields.getFieldById(fieldId);
-    } catch (e) {
-      // Field doesn't exist yet, so add it with sensible defaults
-      Logger.log('Adding field to schema: %s', fieldId);
-      fields.newDimension()
-        .setId(fieldId)
-        .setName(fieldId)
-        .setType(cc.FieldType.TEXT);
-    }
+  // Log the raw request fields for inspection
+  Logger.log('getRequestedFields: Raw request.fields from Looker Studio: %s', JSON.stringify(request.fields));
+  Logger.log('getRequestedFields: Extracted field IDs: %s', JSON.stringify(requestedFieldIds));
+
+  // Populate the Fields object ONLY with what was requested
+  request.fields.forEach(fieldInfo => {
+    // Add the field requested by Looker Studio.
+    // We assume getSchema has already defined the field and its type correctly.
+    // Looker Studio uses the schema from getSchema, getData just provides the data for the requested subset.
+    // We still need to return a Fields object representing this subset for the getData response structure.
+    // Defaulting to TEXT here might be okay if Looker Studio primarily relies on the getSchema definition.
+    Logger.log('getRequestedFields: Adding field to response schema: %s', fieldInfo.name);
+    requestedFields.newDimension()
+      .setId(fieldInfo.name)
+      .setName(fieldInfo.name) // Use the name from the request
+      .setType(cc.FieldType.TEXT); // Defaulting type, actual type mapping happens based on getSchema
   });
-  
-  return fields;
+
+  // Log the fields object *before* returning
+  Logger.log('getRequestedFields: Constructed Fields object for response: %s', JSON.stringify(requestedFields.asArray()));
+
+  return requestedFields;
 }
 
 /**
@@ -573,6 +577,14 @@ function getRequestedFields(request) {
 function processDocument(document) {
   // Check if the document is a result with a document prefix 
   // (e.g., airline: { id: "123", name: "Air France" })
+  Logger.log('processDocument: Input document: %s', JSON.stringify(document));
+  
+  // Add check for non-object input
+  if (typeof document !== 'object' || document === null) {
+     Logger.log('processDocument: Input is not a valid object, returning empty object.');
+     return {}; // Return an empty object to avoid errors downstream
+  }
+
   const keys = Object.keys(document);
   
   // If there's only one top-level key and its value is an object, it might be a document prefix
@@ -591,6 +603,7 @@ function processDocument(document) {
   }
   
   // If it's not a prefixed document, return as is
+  Logger.log('processDocument: No prefix detected, returning document as is.');
   return document;
 }
 
@@ -630,6 +643,7 @@ function getSchema(request) {
     
     // Helper function to process fields from an object
     function processFields(obj, prefix = '') {
+      Logger.log('processFields: Processing object/value at prefix \'%s\'', prefix);
       const fields = [];
       
       // Handle null objects
@@ -699,28 +713,32 @@ function getSchema(request) {
             fields.push(...processFields(value, newPrefix));
           } else {
             // Add field for primitive values
-            fields.push({
+            const fieldDef = {
               name: newPrefix,
               label: newPrefix,
               dataType: getDataType(value),
               semantics: {
                 conceptType: getConceptType(value, getDataType(value))
               }
-            });
+            };
+            Logger.log('processFields: Adding primitive field: %s', JSON.stringify(fieldDef));
+            fields.push(fieldDef);
           }
         });
         
         return fields;
       } else {
         // Handle primitive value
-        return [{
+        const fieldDef = {
           name: prefix || 'value',
           label: prefix || 'Value',
           dataType: getDataType(obj),
           semantics: {
             conceptType: getConceptType(obj, getDataType(obj))
           }
-        }];
+        };
+        Logger.log('processFields: Adding primitive field: %s', JSON.stringify(fieldDef));
+        return [fieldDef];
       }
     }
     
@@ -809,33 +827,34 @@ function getSchema(request) {
     // Make the API request
     const response = UrlFetchApp.fetch(apiUrl, options);
     const responseCode = response.getResponseCode();
+    const responseBody = response.getContentText(); // Get body once
+
+    // Log raw response (truncated)
+    Logger.log('getSchema: Raw API response (code %s): %s...', responseCode, responseBody.substring(0, 500)); // Increased log length
     
     if (responseCode !== 200) {
-      const errorText = response.getContentText();
+      const errorText = responseBody; // Use already fetched body
       Logger.log('API error in getSchema: %s, Error: %s', responseCode, errorText);
       throwUserError(`Couchbase API error (${responseCode}): ${errorText}`);
     }
     
     // Parse the response
-    const responseBody = response.getContentText();
-    let parsedResponse;
+    const parsedResponse = JSON.parse(responseBody);
+    let results = parsedResponse.results || [];
     
-    try {
-      parsedResponse = JSON.parse(responseBody);
-    } catch (e) {
-      Logger.log('Error parsing API response: %s', e.message);
-      throwUserError('Invalid response from Couchbase API: ' + e.message);
+    // Log parsed response structure (first result)
+    if (results.length > 0) {
+      Logger.log('getSchema: Parsed response sample (first result): %s', JSON.stringify(results[0]));
+    } else {
+      Logger.log('getSchema: Parsed response contains no results.');
     }
-    
-    // Process the results
-    const results = parsedResponse.results || [];
-    
+
     if (results.length > 0) {
       // Use the first row to infer schema
       const firstRow = processDocument(results[0]);
       const fields = processFields(firstRow);
       
-      Logger.log('Inferred schema: %s', JSON.stringify(fields));
+      Logger.log('getSchema: Final inferred schema: %s', JSON.stringify(fields));
       return { schema: fields };
     } else {
       // No results returned, provide default schema
@@ -1009,8 +1028,12 @@ function getData(request) {
     }
     
     // Get requested fields
-    const requestedFields = getRequestedFields(request);
-    Logger.log('Requested fields: %s', JSON.stringify(requestedFields.asArray()));
+    const requestedFieldsObject = getRequestedFields(request); // Renamed for clarity
+    const requestedFieldsArray = requestedFieldsObject.asArray(); // Array of Field objects
+    const requestedFieldIds = requestedFieldsArray.map(field => field.getId()); // Get the array of IDs
+
+    Logger.log('Requested fields object: %s', JSON.stringify(requestedFieldsArray));
+    Logger.log('Requested field IDs array: %s', JSON.stringify(requestedFieldIds)); // Log the IDs
     
     // Determine max rows
     const maxRows = parseInt(configParams.maxRows, 10) || 1000;
@@ -1020,7 +1043,8 @@ function getData(request) {
     const apiUrl = columnarUrl + '/api/v1/request';
     
     // Check if there are nested fields in the requested fields
-    const hasNestedFields = requestedFields.asArray().some(field => field.name.includes('.') || field.name.includes('['));
+    const hasNestedFields = requestedFieldIds.some(fieldId => fieldId.includes('.') || fieldId.includes('['));
+    Logger.log('hasNestedFields check result: %s', hasNestedFields); // Add log
     
     // Prepare the query
     let query = '';
@@ -1034,33 +1058,34 @@ function getData(request) {
         query += ` LIMIT ${maxRows}`;
       }
     } else {
-      // Construct SQL query based on collection and requested fields
+      // Construct query based on collection and requested fields
       const collectionParts = configParams.collection.split('.');
-      let collection = configParams.collection;
-      
+      let collectionPath;
       if (collectionParts.length === 3) {
-        collection = `\`${collectionParts[0]}\`.\`${collectionParts[1]}\`.\`${collectionParts[2]}\``;
+        // Escape each part with backticks
+        collectionPath = '`' + collectionParts[0] + '`.`' + collectionParts[1] + '`.`' + collectionParts[2] + '`';
       } else {
-        collection = `\`${configParams.collection}\``;
+        throwUserError('Invalid collection path specified. Use format: bucket.scope.collection');
       }
-      
-      // If there are nested fields, select entire document
-      if (hasNestedFields) {
-        query = `SELECT * FROM ${collection} LIMIT ${maxRows}`;
+
+      // Construct the SELECT clause
+      let selectClause = '*'; // Default to * if no fields requested
+      if (requestedFieldIds && requestedFieldIds.length > 0) { // Use the extracted array
+          selectClause = requestedFieldIds.map(function(fieldId) {
+              // Escape the full fieldId path if it contains dots, and alias it
+              // Assume fieldId is like "airline.country"
+              // Output should be `airline`.`country` AS `airline.country`
+              const pathParts = fieldId.split('.');
+              const escapedPath = pathParts.map(part => '`' + part + '`').join('.');
+              // Use simple quotes for the alias string literal
+              return escapedPath + ' AS `' + fieldId + '`'; 
+          }).join(', ');
       } else {
-        // If no nested fields, select only the requested fields
-        const fieldNames = requestedFields.asArray().map(field => {
-          // Escape field names with backticks
-          return `\`${field.name}\``;
-        }).join(', ');
-        
-        // If no fields requested, select all
-        if (fieldNames === '') {
-          query = `SELECT * FROM ${collection} LIMIT ${maxRows}`;
-        } else {
-          query = `SELECT ${fieldNames} FROM ${collection} LIMIT ${maxRows}`;
-        }
+         Logger.log('getData: No specific fields requested, using SELECT *');
       }
+
+      // Use standard string concatenation
+      query = 'SELECT ' + selectClause + ' FROM ' + collectionPath + ' LIMIT ' + maxRows;
     }
     
     Logger.log('Executing query: %s', query);
@@ -1127,42 +1152,62 @@ function getData(request) {
       const processedResult = processDocument(result);
       const values = [];
       
-      requestedFields.asArray().forEach(field => {
+      // Log the raw result and processed result for the row
+      if (results.indexOf(result) < 3) { // Log first 3 rows
+        Logger.log('getData (Row %s): Raw result: %s', results.indexOf(result), JSON.stringify(result));
+        Logger.log('getData (Row %s): Processed result: %s', results.indexOf(result), JSON.stringify(processedResult));
+      }
+
+      requestedFieldsObject.asArray().forEach(field => { // Use the Fields object here
         const fieldName = field.getId();
-        // Handle nested fields
-        if (fieldName.includes('.') || fieldName.includes('[')) {
-          const value = getNestedValue(processedResult, fieldName);
-          
-          if (value === null || value === undefined) {
-            values.push('');
-          } else if (typeof value === 'object') {
-            values.push(JSON.stringify(value));
-          } else {
-            values.push(value.toString());
-          }
+        let value = null; // Default value
+
+        // Log field being processed
+        if (results.indexOf(result) < 3) {
+           Logger.log('getData (Row %s): Processing field: %s', results.indexOf(result), fieldName);
+        }
+
+        // Directly access the value from the processed (flattened) result
+        // as processDocument has already created keys matching the fieldName format (e.g., "airline.country")
+        value = processedResult[fieldName];
+
+        // Log the retrieved value
+        if (results.indexOf(result) < 3) { // Log first 3 rows
+           Logger.log('getData (Row %s): Value for [%s]: %s', results.indexOf(result), fieldName, JSON.stringify(value));
+        }
+        
+        // Process and push value
+        if (value === null || value === undefined) {
+          values.push('');
+        } else if (typeof value === 'object') {
+          values.push(JSON.stringify(value));
         } else {
-          const value = processedResult[fieldName];
-          
-          if (value === null || value === undefined) {
-            values.push('');
-          } else if (typeof value === 'object') {
-            values.push(JSON.stringify(value));
-          } else {
-            values.push(value.toString());
-          }
+          values.push(value.toString());
         }
       });
       
+      // Log the final values array for the row
+      if (results.indexOf(result) < 3) { // Log first 3 rows
+        Logger.log('getData (Row %s): Final values array: %s', results.indexOf(result), JSON.stringify(values));
+      }
+
       rows.push({ values });
     });
     
+    // Log final rows sample
+    Logger.log('getData: Final rows sample (first %s rows): %s', 
+              Math.min(3, rows.length), 
+              JSON.stringify(rows.slice(0, 3)));
+
     return {
-      schema: requestedFields.build(),
+      schema: requestedFieldsObject.build(),
       rows: rows
     };
   } catch (e) {
-    Logger.log('Error in getData: %s', e.message);
-    throwUserError(`Error retrieving data: ${e.message}`);
+    // Improved error logging and handling
+    const errorMessage = e.message ? e.message : 'An unspecified error occurred';
+    Logger.log('Error in getData: %s. Full error object: %s', errorMessage, JSON.stringify(e)); 
+    throwUserError(`Error retrieving data: ${errorMessage}`);
   }
 }
 
@@ -1175,6 +1220,8 @@ function getData(request) {
  */
 function processResults(response, requestedFields) {
   Logger.log('Processing results from API response');
+  Logger.log('processResults: Input response results sample (first 3): %s', JSON.stringify((response.results || []).slice(0, 3)));
+  Logger.log('processResults: Requested fields: %s', JSON.stringify(requestedFields.asArray()));
   
   if (!response.results || !Array.isArray(response.results)) {
     Logger.log('No results found in API response');
