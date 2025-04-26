@@ -1,18 +1,21 @@
 const axios = require('axios');
 const https = require('https');
-require('dotenv').config(); // Load environment variables from .env file
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
 // Configuration
 const config = {
-  // Base URL is now preferentially loaded from .env, otherwise uses the default.
-  baseUrl: process.env.CB_COLUMNAR_URL || 'https://localhost:18095', // Adjusted default for local testing
+  // Base URL and port now loaded separately from .env
+  baseUrl: process.env.CB_COLUMNAR_URL,
+  port: process.env.CB_COLUMNAR_PORT || '18095',
   auth: {
     // Credentials are now loaded from the .env file
-    username: process.env.CB_USERNAME,
-    password: process.env.CB_PASSWORD
+    username: process.env.CB_USERNAME || 'Administrator',
+    password: process.env.CB_PASSWORD || 'password'
   },
   // Allow overriding SSL verification via environment variable
-  rejectUnauthorized: process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0' // Defaults to true unless overridden
+  // rejectUnauthorized: process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0' // Defaults to true unless overridden
+  rejectUnauthorized: false // Explicitly disable SSL verification
 };
 
 // Validate required configuration
@@ -25,7 +28,9 @@ if (!config.baseUrl) {
   process.exit(1); // Exit if critical config is missing
 }
 
-console.log(`Columnar Client Initializing with Base URL: ${config.baseUrl}`);
+// Construct the full URL with port
+const fullBaseUrl = `${config.baseUrl}:${config.port}`;
+console.log(`Columnar Client Initializing with Base URL: ${fullBaseUrl}`);
 console.log(`Using Username: ${config.auth.username}`);
 if (!config.rejectUnauthorized) {
     console.warn("Warning: Disabling SSL certificate verification (NODE_TLS_REJECT_UNAUTHORIZED=0). This is insecure and not recommended for production.");
@@ -38,7 +43,7 @@ const httpsAgent = new https.Agent({
 
 // Create axios instance with authentication and the custom HTTPS agent
 const api = axios.create({
-  baseURL: config.baseUrl, // Use baseURL for consistency
+  baseURL: fullBaseUrl, // Use the constructed URL with port
   auth: config.auth,
   headers: {
     'Content-Type': 'application/json'
