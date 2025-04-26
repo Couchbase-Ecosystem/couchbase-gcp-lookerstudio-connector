@@ -534,6 +534,67 @@ function validateConfig(configParams) {
 // ==========================================================================
 
 /**
+ * Gets the requested fields from the request.
+ *
+ * @param {Object} request The request.
+ * @return {Fields} The requested fields.
+ */
+function getRequestedFields(request) {
+  const cc = DataStudioApp.createCommunityConnector();
+  const fields = cc.getFields();
+  const requestedFieldIds = request.fields.map(field => field.name);
+  
+  Logger.log('Requested field IDs: %s', JSON.stringify(requestedFieldIds));
+  
+  // Add all requested fields to the fields object
+  requestedFieldIds.forEach(fieldId => {
+    // Check if this field already exists in our connector's field definitions
+    try {
+      fields.getFieldById(fieldId);
+    } catch (e) {
+      // Field doesn't exist yet, so add it with sensible defaults
+      Logger.log('Adding field to schema: %s', fieldId);
+      fields.newDimension()
+        .setId(fieldId)
+        .setName(fieldId)
+        .setType(cc.FieldType.TEXT);
+    }
+  });
+  
+  return fields;
+}
+
+/**
+ * Processes the result document and fixes field names for Columnar response format.
+ * 
+ * @param {Object} document The document from query results
+ * @return {Object} Document with correctly formatted field names
+ */
+function processDocument(document) {
+  // Check if the document is a result with a document prefix 
+  // (e.g., airline: { id: "123", name: "Air France" })
+  const keys = Object.keys(document);
+  
+  // If there's only one top-level key and its value is an object, it might be a document prefix
+  if (keys.length === 1 && typeof document[keys[0]] === 'object' && document[keys[0]] !== null) {
+    const prefix = keys[0];
+    const nestedObj = document[keys[0]];
+    const result = {};
+    
+    // Create fields with the format prefix.field (e.g., airline.id)
+    Object.keys(nestedObj).forEach(key => {
+      result[`${prefix}.${key}`] = nestedObj[key];
+    });
+    
+    Logger.log('Processed document with prefix %s: %s', prefix, JSON.stringify(result));
+    return result;
+  }
+  
+  // If it's not a prefixed document, return as is
+  return document;
+}
+
+/**
  * Returns the schema for the given request.
  *
  * @param {Object} request The request.
@@ -771,7 +832,7 @@ function getSchema(request) {
     
     if (results.length > 0) {
       // Use the first row to infer schema
-      const firstRow = results[0];
+      const firstRow = processDocument(results[0]);
       const fields = processFields(firstRow);
       
       Logger.log('Inferred schema: %s', JSON.stringify(fields));
@@ -1062,12 +1123,15 @@ function getData(request) {
     const rows = [];
     
     results.forEach(result => {
+      // Process document to get correctly formatted field names
+      const processedResult = processDocument(result);
       const values = [];
       
       requestedFields.asArray().forEach(field => {
+        const fieldName = field.getId();
         // Handle nested fields
-        if (field.name.includes('.') || field.name.includes('[')) {
-          const value = getNestedValue(result, field.name);
+        if (fieldName.includes('.') || fieldName.includes('[')) {
+          const value = getNestedValue(processedResult, fieldName);
           
           if (value === null || value === undefined) {
             values.push('');
@@ -1077,7 +1141,7 @@ function getData(request) {
             values.push(value.toString());
           }
         } else {
-          const value = result[field.name];
+          const value = processedResult[fieldName];
           
           if (value === null || value === undefined) {
             values.push('');
