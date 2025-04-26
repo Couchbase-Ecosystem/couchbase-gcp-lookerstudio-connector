@@ -37,9 +37,63 @@ function displayResults(response, label = 'Results') {
   }
 }
 
-// Function to list all buckets in Couchbase
-async function listBuckets() {
-  console.log('\n--- LISTING BUCKETS ---');
+// Function to check if System.Metadata exists and is accessible
+async function checkMetadataAccess() {
+  console.log('\n--- CHECKING METADATA ACCESS ---');
+  try {
+    // Try accessing System.Metadata.Dataset
+    const response = await executeQuery('SELECT COUNT(*) as count FROM System.Metadata.`Dataset` LIMIT 1');
+    
+    if (response && response.results && response.results.length > 0) {
+      console.log('✅ System.Metadata is accessible');
+      return true;
+    } else {
+      console.log('⚠️ Unable to access System.Metadata');
+      return false;
+    }
+  } catch (error) {
+    console.error('❌ Error accessing System.Metadata:', error.message);
+    return false;
+  }
+}
+
+// Function to list all databases
+async function listDatabases() {
+  console.log('\n--- LISTING DATABASES ---');
+  try {
+    // First try using System.Metadata approach
+    const response = await executeQuery('SELECT DISTINCT DatabaseName FROM System.Metadata.`Dataset`');
+    
+    if (response && response.results && response.results.length > 0) {
+      console.log('\nDatabases:');
+      const databases = new Set();
+      
+      response.results.forEach(row => {
+        if (row.DatabaseName) {
+          databases.add(row.DatabaseName);
+        }
+      });
+      
+      Array.from(databases).sort().forEach((database, index) => {
+        console.log(`[${index + 1}] ${database}`);
+      });
+      
+      return Array.from(databases);
+    } else {
+      console.log('No databases found using System.Metadata - falling back to legacy approach');
+      // Fall back to the legacy approach
+      return listBucketsLegacy();
+    }
+  } catch (error) {
+    console.error('Error listing databases:', error.message);
+    console.log('Falling back to legacy approach');
+    return listBucketsLegacy();
+  }
+}
+
+// Legacy function to list all buckets in Couchbase (as a fallback)
+async function listBucketsLegacy() {
+  console.log('\n--- LISTING BUCKETS (LEGACY METHOD) ---');
   try {
     const response = await executeQuery('SELECT DISTINCT ARRAY_AGG(DISTINCT REGEXP_REPLACE(keyspace_id, ":[^:]*$", ""))[0] AS bucket FROM system:keyspaces');
     
@@ -68,9 +122,43 @@ async function listBuckets() {
   }
 }
 
-// Function to list all scopes in a bucket
-async function listScopes(bucketName) {
-  console.log(`\n--- LISTING SCOPES IN BUCKET: ${bucketName} ---`);
+// Function to list all scopes in a database/bucket
+async function listScopes(databaseName) {
+  console.log(`\n--- LISTING SCOPES IN DATABASE: ${databaseName} ---`);
+  try {
+    // First try using System.Metadata approach
+    const response = await executeQuery(`SELECT DISTINCT DataverseName FROM System.Metadata.\`Dataset\` WHERE DatabaseName = "${databaseName}"`);
+    
+    if (response && response.results && response.results.length > 0) {
+      console.log(`\nScopes in database ${databaseName}:`);
+      const scopes = new Set();
+      
+      response.results.forEach(row => {
+        if (row.DataverseName) {
+          scopes.add(row.DataverseName);
+        }
+      });
+      
+      Array.from(scopes).sort().forEach((scope, index) => {
+        console.log(`[${index + 1}] ${scope}`);
+      });
+      
+      return Array.from(scopes);
+    } else {
+      console.log(`No scopes found in database ${databaseName} using System.Metadata - falling back to legacy approach`);
+      // Fall back to the legacy approach
+      return listScopesLegacy(databaseName);
+    }
+  } catch (error) {
+    console.error('Error listing scopes:', error.message);
+    console.log('Falling back to legacy approach');
+    return listScopesLegacy(databaseName);
+  }
+}
+
+// Legacy function to list all scopes in a bucket (as a fallback)
+async function listScopesLegacy(bucketName) {
+  console.log(`\n--- LISTING SCOPES IN BUCKET: ${bucketName} (LEGACY METHOD) ---`);
   try {
     const response = await executeQuery(`SELECT DISTINCT ARRAY_AGG(DISTINCT REGEXP_REPLACE(REGEXP_REPLACE(keyspace_id, "${bucketName}:", ""), "\\.[^.]*$", ""))[0] AS scope FROM system:keyspaces WHERE keyspace_id LIKE "${bucketName}:%"`);
     
@@ -99,9 +187,43 @@ async function listScopes(bucketName) {
   }
 }
 
-// Function to list all collections in a bucket and scope
-async function listCollections(bucketName, scopeName) {
-  console.log(`\n--- LISTING COLLECTIONS IN BUCKET: ${bucketName}, SCOPE: ${scopeName} ---`);
+// Function to list all collections in a database, scope
+async function listCollections(databaseName, scopeName) {
+  console.log(`\n--- LISTING COLLECTIONS IN DATABASE: ${databaseName}, SCOPE: ${scopeName} ---`);
+  try {
+    // First try using System.Metadata approach
+    const response = await executeQuery(`SELECT DatasetName FROM System.Metadata.\`Dataset\` WHERE DatabaseName = "${databaseName}" AND DataverseName = "${scopeName}"`);
+    
+    if (response && response.results && response.results.length > 0) {
+      console.log(`\nCollections in database ${databaseName}, scope ${scopeName}:`);
+      const collections = [];
+      
+      response.results.forEach(row => {
+        if (row.DatasetName) {
+          collections.push(row.DatasetName);
+        }
+      });
+      
+      collections.sort().forEach((collection, index) => {
+        console.log(`[${index + 1}] ${collection}`);
+      });
+      
+      return collections;
+    } else {
+      console.log(`No collections found in database ${databaseName}, scope ${scopeName} using System.Metadata - falling back to legacy approach`);
+      // Fall back to the legacy approach
+      return listCollectionsLegacy(databaseName, scopeName);
+    }
+  } catch (error) {
+    console.error('Error listing collections:', error.message);
+    console.log('Falling back to legacy approach');
+    return listCollectionsLegacy(databaseName, scopeName);
+  }
+}
+
+// Legacy function to list all collections in a bucket and scope (as a fallback)
+async function listCollectionsLegacy(bucketName, scopeName) {
+  console.log(`\n--- LISTING COLLECTIONS IN BUCKET: ${bucketName}, SCOPE: ${scopeName} (LEGACY METHOD) ---`);
   try {
     const response = await executeQuery(`SELECT DISTINCT REGEXP_REPLACE(keyspace_id, "${bucketName}:${scopeName}\\.", "") AS collection FROM system:keyspaces WHERE keyspace_id LIKE "${bucketName}:${scopeName}.%"`);
     
@@ -130,20 +252,53 @@ async function listCollections(bucketName, scopeName) {
   }
 }
 
+// Function to get schema information for a collection
+async function getCollectionSchema(databaseName, scopeName, collectionName) {
+  console.log(`\n--- GETTING SCHEMA FOR: ${databaseName}.${scopeName}.${collectionName} ---`);
+  try {
+    // Try to get one row to infer schema
+    const response = await executeQuery(`SELECT * FROM \`${databaseName}\`.\`${scopeName}\`.\`${collectionName}\` LIMIT 1`);
+    
+    if (response && response.results && response.results.length > 0) {
+      const sampleRow = response.results[0];
+      console.log(`\nSchema fields for ${databaseName}.${scopeName}.${collectionName}:`);
+      
+      const fields = Object.keys(sampleRow);
+      fields.sort().forEach((field, index) => {
+        const value = sampleRow[field];
+        const type = value === null ? 'null' : typeof value;
+        console.log(`[${index + 1}] ${field}: ${type}`);
+      });
+      
+      return fields;
+    } else {
+      console.log(`No data found in ${databaseName}.${scopeName}.${collectionName} to infer schema.`);
+      return [];
+    }
+  } catch (error) {
+    console.error('Error getting collection schema:', error.message);
+    return [];
+  }
+}
+
 // Function to explore database structure
 async function exploreDatabaseStructure() {
   console.log('\n--- EXPLORING DATABASE STRUCTURE ---');
   
-  // List all buckets
-  const buckets = await listBuckets();
+  // Check if System.Metadata is accessible
+  const hasMetadata = await checkMetadataAccess();
+  console.log(`Using System.Metadata: ${hasMetadata ? 'Yes' : 'No (using legacy method)'}`);
   
-  if (buckets.length > 0) {
-    // Choose a bucket to explore (travel-sample)
-    const travelSampleBucket = buckets.find(bucket => bucket === 'travel-sample');
+  // List all databases
+  const databases = await listDatabases();
+  
+  if (databases.length > 0) {
+    // Choose a database to explore (travel-sample)
+    const travelSampleDatabase = databases.find(db => db === 'travel-sample');
     
-    if (travelSampleBucket) {
-      // List scopes in the travel-sample bucket
-      const scopes = await listScopes(travelSampleBucket);
+    if (travelSampleDatabase) {
+      // List scopes in the travel-sample database
+      const scopes = await listScopes(travelSampleDatabase);
       
       if (scopes.length > 0) {
         // Choose a scope to explore (inventory)
@@ -151,7 +306,12 @@ async function exploreDatabaseStructure() {
         
         if (inventoryScope) {
           // List collections in the travel-sample.inventory scope
-          await listCollections(travelSampleBucket, inventoryScope);
+          const collections = await listCollections(travelSampleDatabase, inventoryScope);
+          
+          // Get schema for a sample collection
+          if (collections.length > 0) {
+            await getCollectionSchema(travelSampleDatabase, inventoryScope, collections[0]);
+          }
         }
       }
     }
@@ -246,6 +406,27 @@ async function runJoinQueries() {
   displayResults(sfoJoinResponse, 'Destinations from SFO with Airport Details');
 }
 
+// Function to explore metadata
+async function exploreMetadata() {
+  console.log('\n--- EXPLORING SYSTEM METADATA ---');
+  
+  // Get one example of each metadata type
+  const metadataTypes = ['Dataset', 'Dataverse', 'Link', 'Function', 'Index', 'Synonym'];
+  
+  for (const type of metadataTypes) {
+    const response = await executeQuery(`SELECT * FROM System.Metadata.\`${type}\` LIMIT 1`);
+    displayResults(response, `Sample ${type} Metadata`);
+  }
+  
+  // List all collections
+  const collectionsResponse = await executeQuery(`
+    SELECT VALUE d.DatabaseName || '.' || d.DataverseName || '.' || d.DatasetName
+    FROM System.Metadata.\`Dataset\` d
+    WHERE d.DataverseName <> "Metadata"
+  `);
+  displayResults(collectionsResponse, 'All Collections (excluding System.Metadata)');
+}
+
 // Main function to run the explorer
 async function runExplorer() {
   console.log('Initializing Couchbase Columnar Explorer...');
@@ -259,6 +440,9 @@ async function runExplorer() {
       console.error('Basic connectivity test failed. Cannot continue.');
       return;
     }
+    
+    // Try exploring metadata (if available)
+    await exploreMetadata();
     
     // Explore database structure - buckets, scopes, collections
     await exploreDatabaseStructure();
@@ -287,12 +471,15 @@ if (require.main === module) {
 module.exports = {
   executeQuery,
   displayResults,
-  listBuckets,
+  checkMetadataAccess,
+  listDatabases,
   listScopes,
   listCollections,
+  getCollectionSchema,
   exploreDatabaseStructure,
   exploreTravelSample,
   runAnalysisQueries,
   runJoinQueries,
+  exploreMetadata,
   runExplorer
 }; 
