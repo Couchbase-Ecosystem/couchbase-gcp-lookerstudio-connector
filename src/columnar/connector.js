@@ -32,17 +32,13 @@ function validateCredentials(path, username, password) {
     return false; 
   }
 
-  // Construct the base API URL using the helper function for Columnar (port 18095)
-  const apiBaseUrl = constructApiUrl(path, 18095); // Default Columnar port is 18095
-  Logger.log('validateCredentials: Constructed Columnar API Base URL: %s', apiBaseUrl);
-
-  const queryUrl = apiBaseUrl + '/api/v1/request'; // Use Columnar service path
-  // Log the final URL being used for the fetch call
+  // Use constructApiUrl for consistent URL handling
+  const columnarUrl = constructApiUrl(path, 18095);
+  const queryUrl = columnarUrl + '/api/v1/request';
   Logger.log('validateCredentials constructed Columnar queryUrl: %s', queryUrl);
-  Logger.log('Validation query URL (using port 18095): %s', queryUrl);
 
   const queryPayload = {
-    statement: 'SELECT 1;', // Simple query compatible with Columnar
+    statement: 'SELECT 1 AS test;',
     timeout: '5s'
   };
 
@@ -174,139 +170,122 @@ function fetchCouchbaseMetadata() {
     };
   }
   
-  // Construct base URLs using the helper function
-  const queryBaseUrl = constructApiUrl(path, 18095); // Columnar port
-  const mgmtBaseUrl = constructApiUrl(path, 18091);  // Default management port
-  Logger.log('fetchCouchbaseMetadata: Query Base URL: %s, Mgmt Base URL: %s', queryBaseUrl, mgmtBaseUrl);
+  // Construct API URL - for columnar, use only the columnar direct query endpoint
+  const columnarUrl = constructApiUrl(path, 18095);
+  const queryUrl = columnarUrl + '/api/v1/request';
+  Logger.log('fetchCouchbaseMetadata: Using Columnar URL: %s', queryUrl);
 
-  // Endpoint to fetch buckets uses the management URL
-  const bucketUrl = mgmtBaseUrl + '/pools/default/buckets';
-  
+  const authHeader = 'Basic ' + Utilities.base64Encode(username + ':' + password);
   const options = {
-    method: 'get',
+    method: 'post',
+    contentType: 'application/json',
     headers: {
-      Authorization: 'Basic ' + Utilities.base64Encode(username + ':' + password)
+      Authorization: authHeader
     },
     muteHttpExceptions: true,
     validateHttpsCertificates: false
   };
   
+  // Initialize empty result structure
+  let bucketNames = [];
+  const scopesCollections = {};
+  
   try {
-    // Fetch buckets
-    Logger.log('fetchCouchbaseMetadata: Fetching buckets from %s', bucketUrl);
-    const response = UrlFetchApp.fetch(bucketUrl, options);
-    
-    if (response.getResponseCode() !== 200) {
-      Logger.log('Error fetching buckets. Code: %s, Response: %s', 
-                response.getResponseCode(), response.getContentText());
-      return {
-        buckets: [],
-        scopesCollections: {}
-      };
-    }
-    
-    let bucketNames = [];
-    try {
-      const buckets = JSON.parse(response.getContentText());
-      
-      if (Array.isArray(buckets)) {
-        bucketNames = buckets.map(bucket => bucket.name);
-        Logger.log('fetchCouchbaseMetadata: Found buckets: %s', bucketNames.join(', '));
-      } else {
-        Logger.log('fetchCouchbaseMetadata: Unexpected bucket response format');
-      }
-    } catch (e) {
-      Logger.log('Error parsing bucket response: %s', e.toString());
-      return {
-        buckets: [],
-        scopesCollections: {}
-      };
-    }
-    
-    // Use Columnar API to get keyspaces
-    const queryUrl = queryBaseUrl + '/api/v1/request';
-    
-    // Initialize the scopesCollections structure
-    const scopesCollections = {};
-    bucketNames.forEach(bucketName => {
-      scopesCollections[bucketName] = {}; // Initialize empty object for each bucket
-    });
-    
-    Logger.log('fetchCouchbaseMetadata: Querying using system:keyspaces');
-    
-    // For Columnar, we need to query system:keyspaces differently
-    const keyspaceQueryPayload = {
-      statement: "SELECT DISTINCT keyspace_id FROM system:keyspaces",
+    // For Columnar, we need to query system:keyspaces directly
+    const bucketQueryPayload = {
+      statement: "SELECT DISTINCT SPLIT_PART(keyspace_id, ':', 1) AS bucket FROM system:keyspaces WHERE SPLIT_PART(keyspace_id, ':', 1) != 'system';",
       timeout: "10000ms"
     };
     
-    const queryOptions = {
-      method: 'post',
-      contentType: 'application/json',
-      payload: JSON.stringify(keyspaceQueryPayload),
-      headers: {
-        Authorization: 'Basic ' + Utilities.base64Encode(username + ':' + password)
-      },
-      muteHttpExceptions: true,
-      validateHttpsCertificates: false
+    // First get all buckets
+    options.payload = JSON.stringify(bucketQueryPayload);
+    Logger.log('fetchCouchbaseMetadata: Querying for buckets');
+    
+    const bucketResponse = UrlFetchApp.fetch(queryUrl, options);
+    
+    if (bucketResponse.getResponseCode() === 200) {
+      const bucketData = JSON.parse(bucketResponse.getContentText());
+      
+      if (bucketData.results && Array.isArray(bucketData.results)) {
+        bucketNames = bucketData.results
+          .filter(item => item.bucket) // Filter out any null or undefined
+          .map(item => item.bucket);
+        
+        Logger.log('fetchCouchbaseMetadata: Found buckets: %s', bucketNames.join(', '));
+      } else {
+        Logger.log('fetchCouchbaseMetadata: Bucket query result format unexpected or empty.');
+      }
+    } else {
+      Logger.log('Error fetching buckets. Code: %s, Response: %s', 
+                bucketResponse.getResponseCode(), bucketResponse.getContentText());
+    }
+    
+    // Now get all keyspaces
+    const keyspaceQueryPayload = {
+      statement: "SELECT keyspace_id FROM system:keyspaces WHERE SPLIT_PART(keyspace_id, ':', 1) != 'system';",
+      timeout: "10000ms"
     };
     
-    try {
-      const keyspaceResponse = UrlFetchApp.fetch(queryUrl, queryOptions);
+    options.payload = JSON.stringify(keyspaceQueryPayload);
+    Logger.log('fetchCouchbaseMetadata: Querying for keyspaces');
+    
+    const keyspaceResponse = UrlFetchApp.fetch(queryUrl, options);
+    
+    if (keyspaceResponse.getResponseCode() === 200) {
+      const keyspaceData = JSON.parse(keyspaceResponse.getContentText());
+      Logger.log('fetchCouchbaseMetadata: Keyspace response received');
       
-      if (keyspaceResponse.getResponseCode() === 200) {
-        const keyspaceData = JSON.parse(keyspaceResponse.getContentText());
-        Logger.log('fetchCouchbaseMetadata: Keyspace response received from system:keyspaces');
-        
-        if (keyspaceData.results && Array.isArray(keyspaceData.results)) {
-          keyspaceData.results.forEach(item => {
-            if (item.keyspace_id) {
-              const keyspaceParts = item.keyspace_id.split(':');
-              if (keyspaceParts.length >= 2) {
-                const bucket = keyspaceParts[0];
-                
-                // Skip system keyspaces and non-matching buckets
-                if (bucket === 'system' || !bucketNames.includes(bucket)) {
-                  return;
-                }
-                
-                // Parse scope and collection from keyspace_id
-                // Format is typically bucket:scope.collection
-                const scopeCollectionParts = keyspaceParts[1].split('.');
-                let scope, collection;
-                
-                if (scopeCollectionParts.length >= 2) {
-                  scope = scopeCollectionParts[0];
-                  collection = scopeCollectionParts[1];
-                } else {
-                  // Default if format is unexpected
-                  scope = '_default';
-                  collection = scopeCollectionParts[0] || '_default';
-                }
-                
-                // Initialize scope if not exists
-                if (!scopesCollections[bucket][scope]) {
-                  scopesCollections[bucket][scope] = [];
-                }
-                
-                // Add collection if not already added
-                if (!scopesCollections[bucket][scope].includes(collection)) {
-                  scopesCollections[bucket][scope].push(collection);
-                  Logger.log('fetchCouchbaseMetadata: Added: %s.%s.%s', 
-                            bucket, scope, collection);
-                }
+      // Initialize bucket structures
+      bucketNames.forEach(bucket => {
+        scopesCollections[bucket] = {};
+      });
+      
+      if (keyspaceData.results && Array.isArray(keyspaceData.results)) {
+        keyspaceData.results.forEach(item => {
+          if (item.keyspace_id) {
+            const keyspaceParts = item.keyspace_id.split(':');
+            if (keyspaceParts.length >= 2) {
+              const bucket = keyspaceParts[0];
+              
+              // Skip non-matching buckets
+              if (!bucketNames.includes(bucket)) {
+                return;
+              }
+              
+              // Parse scope and collection from keyspace_id
+              // Format is typically bucket:scope.collection
+              const scopeCollectionParts = keyspaceParts[1].split('.');
+              let scope, collection;
+              
+              if (scopeCollectionParts.length >= 2) {
+                scope = scopeCollectionParts[0];
+                collection = scopeCollectionParts[1];
+              } else {
+                // Default if format is unexpected
+                scope = '_default';
+                collection = scopeCollectionParts[0] || '_default';
+              }
+              
+              // Initialize scope if not exists
+              if (!scopesCollections[bucket][scope]) {
+                scopesCollections[bucket][scope] = [];
+              }
+              
+              // Add collection if not already added
+              if (!scopesCollections[bucket][scope].includes(collection)) {
+                scopesCollections[bucket][scope].push(collection);
+                Logger.log('fetchCouchbaseMetadata: Added: %s.%s.%s', 
+                          bucket, scope, collection);
               }
             }
-          });
-        } else {
-           Logger.log('fetchCouchbaseMetadata: Keyspace query result format unexpected or empty.');
-        }
+          }
+        });
       } else {
-        Logger.log('Error fetching keyspaces. Code: %s, Response: %s', 
-                  keyspaceResponse.getResponseCode(), keyspaceResponse.getContentText());
+        Logger.log('fetchCouchbaseMetadata: Keyspace query result format unexpected or empty.');
       }
-    } catch (e) {
-      Logger.log('Error during keyspace query: %s', e.toString());
+    } else {
+      Logger.log('Error fetching keyspaces. Code: %s, Response: %s', 
+                keyspaceResponse.getResponseCode(), keyspaceResponse.getContentText());
     }
     
     // Add _default._default if no other collections were found for a bucket
@@ -342,17 +321,18 @@ function getConfig(request) {
   config
     .newInfo()
     .setId('instructions')
-    .setText('Select one or more collections OR enter a custom Columnar query below. If a custom query is entered, the collection selection will be ignored.');
+    .setText('Select a collection OR enter a custom Columnar query below. If a custom query is entered, the collection selection will be ignored.');
 
   // Fetch buckets, scopes, and collections
   const metadata = fetchCouchbaseMetadata();
   Logger.log('getConfig: Metadata fetch returned buckets: %s', JSON.stringify(metadata.buckets));
   
   // Use Single Select for the collection, as only the first is used by getSchema/getData
-  const collectionSingleSelect = config.newSelectSingle()
+  const collectionSelect = config
+    .newSelectSingle()
     .setId('collection')
-    .setName('Couchbase Collection (Required if no Custom Query)')
-    .setHelpText('Select the single collection to query data from (ignored if Custom Query is entered).')
+    .setName('Couchbase Collection')
+    .setHelpText('Select the collection to query data from (ignored if Custom Query is entered).')
     .setAllowOverride(true);
   
   // Build a list of all fully qualified collection paths
@@ -377,7 +357,7 @@ function getConfig(request) {
   
   // Add options for each collection path
   collectionPaths.forEach(item => {
-    collectionSingleSelect.addOption(
+    collectionSelect.addOption(
       config.newOptionBuilder().setLabel(item.label).setValue(item.path)
     );
   });
@@ -386,66 +366,65 @@ function getConfig(request) {
   config
     .newTextArea()
     .setId('query')
-    .setName('Custom Columnar Query (Overrides Collection Selection)')
+    .setName('Custom Columnar Query')
     .setHelpText('Enter a valid Columnar query. If entered, this query will be used instead of the collection selection above.')
-    .setPlaceholder('SELECT airline.name, airline.iata, airline.country FROM `travel-sample`.`inventory`.`airline` AS airline WHERE airline.country = "France" AND airline.name LIKE "A%" LIMIT 10 OFFSET 20')
+    .setPlaceholder('SELECT airline.name, airline.iata, airline.country FROM `travel-sample`.`inventory`.`airline` AS airline WHERE airline.country = "France" LIMIT 100')
+    .setAllowOverride(true);
+  
+  // Add max rows option
+  config
+    .newTextInput()
+    .setId('maxRows')
+    .setName('Maximum Rows')
+    .setHelpText('Maximum number of rows to return (default: 1000)')
+    .setPlaceholder('1000')
     .setAllowOverride(true);
 
   return config.build();
 }
 
 /**
- * Validates config, retrieves stored credentials, and prepares config for fetching.
+ * Validates the user configuration and returns the validated configuration object.
+ *
+ * @param {Object} configParams The user configuration parameters.
+ * @return {Object} The validated configuration object.
  */
 function validateConfig(configParams) {
-  configParams = configParams || {};
+  Logger.log('Validating config parameters: %s', JSON.stringify(configParams));
   
-  // Get stored credentials from PropertiesService
+  if (!configParams) {
+    throwUserError('No configuration provided');
+  }
+  
+  // Get credentials from user properties
   const userProperties = PropertiesService.getUserProperties();
   const path = userProperties.getProperty('dscc.path');
   const username = userProperties.getProperty('dscc.username');
   const password = userProperties.getProperty('dscc.password');
   
   if (!path || !username || !password) {
-     Logger.log('validateConfig Error: Authentication credentials missing from storage.');
-     throwUserError('Authentication credentials are missing. Please use "EDIT CONNECTION" to reconnect to Couchbase.');
+    throwUserError('Authentication credentials missing. Please reauthenticate.');
   }
   
-  // Add credentials to configParams for use in fetchData
-  configParams.baseUrl = path;
-  configParams.username = username;
-  configParams.password = password;
-  
-  // Validate configuration: Use query if provided, otherwise require a collection
-  const hasQuery = configParams.query && configParams.query.trim() !== '';
-  // Use the singular 'collection' ID now
-  const hasCollection = configParams.collection && configParams.collection.trim() !== ''; 
-
-  if (hasQuery) {
-    // Custom query is provided, ignore collection selection
-    configParams.collection = ''; // Clear collection explicitly
-    Logger.log('validateConfig: Using custom query: %s', configParams.query);
-  } else if (hasCollection) {
-    // Collection is selected, query is empty
-    configParams.query = ''; // Ensure query is empty
-    Logger.log('validateConfig: Using collection: %s', configParams.collection); 
-  } else {
-    // Neither custom query nor collection is provided
-    throwUserError('Configuration Error: Please select at least one collection OR enter a Custom Columnar Query.');
-  }
-
-  // Optional: Check Capella URL format
-  if (path.includes('cloud.couchbase.com') && !path.startsWith('couchbases://') && !path.startsWith('https://')) {
-      Logger.log('validateConfig Warning: Capella URL found without secure prefix: %s', path);
+  // Check that either a collection or query is provided
+  if ((!configParams.collection || configParams.collection.trim() === '') && 
+      (!configParams.query || configParams.query.trim() === '')) {
+    throwUserError('Either a collection or a custom query must be specified');
   }
   
-  // Log success based on which input was used
-  if (hasQuery) {
-      Logger.log('validateConfig successful (used custom query).');
-  } else {
-      Logger.log('validateConfig successful (used collection: %s).', configParams.collection);
-  }
-  return configParams;
+  // Create a validated config object with defaults
+  const validatedConfig = {
+    path: path,
+    username: username,
+    password: password,
+    collection: configParams.collection ? configParams.collection.trim() : '',
+    query: configParams.query ? configParams.query.trim() : '',
+    maxRows: configParams.maxRows && parseInt(configParams.maxRows) > 0 ? 
+             parseInt(configParams.maxRows) : 1000
+  };
+  
+  Logger.log('Config validation successful');
+  return validatedConfig;
 }
 
 // ==========================================================================
@@ -454,66 +433,183 @@ function validateConfig(configParams) {
 
 /**
  * Returns the schema for the given request.
+ * 
+ * @param {Object} request Schema request parameters.
+ * @return {Object} Schema for the given request.
  */
 function getSchema(request) {
-  request.configParams = validateConfig(request.configParams);
+  Logger.log('getSchema called with request: %s', JSON.stringify(request));
   
   try {
-    const hasCustomQuery = request.configParams.query && request.configParams.query.trim() !== '';
-
-    // If a custom query exists, use it directly
-    if (hasCustomQuery) {
-      Logger.log('getSchema: Using custom query: %s', request.configParams.query);
-      const result = fetchData(request.configParams); 
-      
-      // Check if the custom query returned any results for schema inference
-      if (!result?.results?.length) {
-          Logger.log('getSchema Error: Custom query returned no results. Cannot build schema.');
-          throwUserError(
-            'Custom query returned no results. Schema cannot be determined. ' + 
-            'Please ensure your custom query returns at least one row, or use the collection selector instead.'
-          );
-          // throwUserError stops execution, but return just in case
-          return; 
+    const configParams = request.configParams;
+    
+    // If schema fields are provided in the configuration, use them
+    if (configParams && configParams.schemaFields) {
+      try {
+        const schemaFields = JSON.parse(configParams.schemaFields);
+        Logger.log('Using predefined schema fields: %s', JSON.stringify(schemaFields));
+        return { schema: schemaFields };
+      } catch (e) {
+        Logger.log('Error parsing schema fields: %s', e.message);
+        throwUserError('Invalid schema fields format: ' + e.message);
       }
-      
-      // Proceed with building schema from the custom query results
-      const schema = buildSchema(result);
-      return { schema: schema };
-    } else {
-      // Otherwise, generate query based on the selected collection
-      const collectionPath = request.configParams.collection; // Use singular 'collection'
-      if (!collectionPath) {
-         // This should ideally be caught by validateConfig, but double-check
-         throwUserError('Configuration Error: No collection selected.'); 
-         return; // Should not proceed
-      }
-      const [bucket, scope, collectionName] = collectionPath.split('.');
-      
-      // Set the specific collection details for the generated query context in fetchData
-      const schemaParams = {
-        ...request.configParams, // Keep other params like credentials
-        bucket: bucket,
-        scope: scope,
-        collection: collectionName // Used for context, query is generated below
-      };
-      
-      // Generate the SELECT * query, limited for schema inference performance
-      const formattedBucket = '`' + bucket + '`';
-      const formattedScope = '`' + scope + '`';
-      const formattedCollection = '`' + collectionName + '`';
-      schemaParams.query = 'SELECT * FROM ' + formattedBucket + '.' + formattedScope + '.' + formattedCollection + ' LIMIT 100'; // Limit for schema performance
-      
-      Logger.log('getSchema: Using collection %s for schema with generated query (LIMIT 100): %s', collectionPath, schemaParams.query);
-      
-      const result = fetchData(schemaParams);
-      const schema = buildSchema(result);
-      return { schema: schema };
     }
+    
+    // Otherwise, try to infer the schema from a sample query
+    if (!configParams) {
+      // Return a default schema if no configuration is provided
+      return {
+        schema: [
+          { name: 'id', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' } },
+          { name: 'value', dataType: 'NUMBER', semantics: { conceptType: 'METRIC' } }
+        ]
+      };
+    }
+    
+    // Get credentials
+    const userProperties = PropertiesService.getUserProperties();
+    const path = userProperties.getProperty('dscc.path');
+    const username = userProperties.getProperty('dscc.username');
+    const password = userProperties.getProperty('dscc.password');
+    
+    if (!path || !username || !password) {
+      Logger.log('getSchema: Missing credentials');
+      throwUserError('Authentication credentials missing. Please reauthenticate.');
+    }
+    
+    // Determine the query to execute for schema detection
+    // We'll use LIMIT 1 to get just one row for schema detection
+    let query;
+    if (configParams.query && configParams.query.trim() !== '') {
+      // Add a LIMIT 1 clause if not already present
+      const baseQuery = configParams.query.trim();
+      query = baseQuery.toLowerCase().includes('limit') ? 
+        baseQuery : 
+        `${baseQuery} LIMIT 1`;
+    } else if (configParams.collection) {
+      // Simple SELECT from collection with LIMIT 1
+      query = `SELECT * FROM \`${configParams.collection}\` LIMIT 1`;
+    } else {
+      throwUserError('Configuration Error: No query or collection specified');
+    }
+    
+    Logger.log('Schema detection query: %s', query);
+    
+    // Use constructApiUrl for consistent URL handling
+    const columnarUrl = constructApiUrl(path, 18095);
+    const queryUrl = columnarUrl + '/api/v1/request';
+    
+    // Set up the API request payload
+    const payload = {
+      statement: query,
+      timeout: '10s'
+    };
+    
+    // Create authentication header value
+    const auth = Utilities.base64Encode(`${username}:${password}`);
+    
+    // Set up the API request options
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        'Authorization': 'Basic ' + auth
+      },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+      validateHttpsCertificates: false
+    };
+    
+    // Execute the request
+    Logger.log('Executing schema detection request to %s', queryUrl);
+    const response = UrlFetchApp.fetch(queryUrl, options);
+    
+    // Check response code
+    const responseCode = response.getResponseCode();
+    if (responseCode !== 200) {
+      const errorText = response.getContentText();
+      Logger.log('API error in schema detection: %s, Error: %s', responseCode, errorText);
+      throwUserError(`Couchbase API error (${responseCode}): ${errorText}`);
+    }
+    
+    // Parse the response
+    const responseText = response.getContentText();
+    let parsedResponse;
+    
+    try {
+      parsedResponse = JSON.parse(responseText);
+    } catch (e) {
+      Logger.log('Error parsing API response for schema: %s', e.message);
+      throwUserError('Invalid response from Couchbase API: ' + e.message);
+    }
+    
+    // Extract the results - we should have at least one row for schema detection
+    const results = parsedResponse.results || [];
+    
+    if (results.length === 0) {
+      Logger.log('No data returned for schema detection');
+      return {
+        schema: [
+          { name: 'id', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' } },
+          { name: 'value', dataType: 'NUMBER', semantics: { conceptType: 'METRIC' } }
+        ]
+      };
+    }
+    
+    // Infer the schema from the first row
+    const firstRow = results[0];
+    const fields = [];
+    
+    // Process each field in the result to determine its data type
+    // Format according to Looker Studio requirements in looker-studio.txt and looker-studio-config.txt
+    Object.keys(firstRow).forEach(key => {
+      const value = firstRow[key];
+      let dataType = 'STRING';
+      let conceptType = 'DIMENSION';
+      
+      // Determine data type based on the value
+      if (value === null || value === undefined) {
+        dataType = 'STRING';
+      } else if (typeof value === 'number') {
+        dataType = 'NUMBER';
+        conceptType = 'METRIC';
+        // Add isReaggregatable for metrics as shown in looker-studio.txt
+        fields.push({
+          name: key,
+          label: key,
+          dataType: dataType,
+          semantics: { 
+            conceptType: conceptType,
+            isReaggregatable: true
+          }
+        });
+        return; // Skip the normal push at the end
+      } else if (typeof value === 'boolean') {
+        dataType = 'BOOLEAN';
+      } else if (value instanceof Date || (typeof value === 'string' && !isNaN(Date.parse(value)))) {
+        dataType = 'STRING';
+        conceptType = 'DIMENSION';
+      } else if (typeof value === 'object') {
+        // Objects and arrays are converted to strings
+        dataType = 'STRING';
+      }
+      
+      fields.push({
+        name: key,
+        label: key,
+        dataType: dataType,
+        semantics: { conceptType: conceptType }
+      });
+    });
+    
+    Logger.log('Inferred schema: %s', JSON.stringify(fields));
+    return { schema: fields };
   } catch (e) {
-    Logger.log('Error during getSchema: %s', e.toString());
-    Logger.log('getSchema Exception details: %s', e.stack);
-    throwUserError('Failed to get schema: ' + e.message);
+    Logger.log('Error in getSchema: %s', e.message);
+    if (e.name === 'UserError') {
+      throw e;
+    }
+    throwUserError(`Error getting schema: ${e.message}`);
   }
 }
 
@@ -638,188 +734,217 @@ function buildSchema(result) {
 }
 
 /**
- * Returns the tabular data for the given request.
+ * Returns tabular data for the given request.
+ *
+ * @param {Object} request The request object.
+ * @return {Object} The response object containing the data.
  */
 function getData(request) {
-  request.configParams = validateConfig(request.configParams);
-  
+  Logger.log('getData request: %s', JSON.stringify(request));
+
   try {
-    const hasCustomQuery = request.configParams.query && request.configParams.query.trim() !== '';
-    let result;
-    let queryToRun;
-
-    if (hasCustomQuery) {
-      Logger.log('getData: Using custom query: %s', request.configParams.query);
-      queryToRun = request.configParams.query;
-      // Pass the full configParams, fetchData handles the query context
-      result = fetchData(request.configParams); 
-    } else { 
-      // Generate query based on the selected collection
-      const collectionPath = request.configParams.collection;
-      if (!collectionPath) {
-         throwUserError('Configuration Error: No collection selected.'); 
-         return; 
-      }
-      const [bucket, scope, collectionName] = collectionPath.split('.');
-      
-      // Set the specific collection details for the generated query context in fetchData
-      const dataParams = {
-        ...request.configParams, 
-        bucket: bucket,
-        scope: scope,
-        collection: collectionName 
-      };
-      
-      // Generate the SELECT * query for this collection (no limit here)
-      const formattedBucket = '`' + bucket + '`';
-      const formattedScope = '`' + scope + '`';
-      const formattedCollection = '`' + collectionName + '`';
-      dataParams.query = 'SELECT * FROM ' + formattedBucket + '.' + formattedScope + '.' + formattedCollection;
-      queryToRun = dataParams.query;
-      
-      Logger.log('getData: Using collection %s for data with generated query: %s', collectionPath, dataParams.query);
-      result = fetchData(dataParams);
-    }
-
-    // --- Process results --- 
-    if (!result?.results?.length) {
-      // If query returned no results, return empty rows based on the fields Looker Studio requested
-      const requestedFieldsSchema = getFieldsFromRequest(request); // Use helper to get schema structure
-      Logger.log('getData: Query [%s] returned no results. Returning empty rows with schema.', queryToRun);
-      return {
-        schema: requestedFieldsSchema,
-        rows: []
-      };
-    }
-
-    // Get the field IDs requested by Looker Studio IN THEIR ORDER
-    const requestedFieldIds = request.fields.map(field => field.name);
+    // Get credentials from user properties
+    const userProperties = PropertiesService.getUserProperties();
+    const path = userProperties.getProperty('dscc.path');
+    const username = userProperties.getProperty('dscc.username');
+    const password = userProperties.getProperty('dscc.password');
     
-    // Build the schema for the response IN THE ORDER requested by Looker Studio
-    // We use the schema information provided in the request itself, rather than re-building from data
-    let responseSchema = [];
-    try {
-       // Attempt to get the full schema definition to ensure correct data types
-       const fullSchema = getSchema(request).schema; 
-       responseSchema = requestedFieldIds.map(fieldId => {
-          const fieldDefinition = fullSchema.find(f => f.name === fieldId);
-          // Return a minimal schema object if somehow not found in full schema (fallback)
-          return fieldDefinition || { name: fieldId, label: fieldId, dataType: 'STRING' }; 
-       });
-    } catch (e) {
-       // Fallback if getSchema fails during this phase (should be rare)
-       Logger.log('getData: Error getting full schema during response building: %s. Using basic schema.', e);
-       responseSchema = requestedFieldIds.map(fieldId => ({ name: fieldId, label: fieldId, dataType: 'STRING' }));
+    if (!path || !username || !password) {
+      Logger.log('getData: Missing credentials');
+      throwUserError('Authentication credentials missing. Please reauthenticate.');
     }
-
-    // Map data rows to the expected { values: [...] } format
-    const rows = result.results.map(row => {
-      // Handle potentially nested results (common in Couchbase N1QL)
-      let dataObject = row;
-      const keys = Object.keys(row);
-      if (keys.length === 1 && typeof row[keys[0]] === 'object' && row[keys[0]] !== null) {
-         dataObject = row[keys[0]];
+    
+    // Get configuration
+    const configParams = request.configParams;
+    if (!configParams) {
+      throwUserError('No configuration provided');
+    }
+    
+    // Check required config parameters
+    if ((!configParams.collection || configParams.collection.trim() === '') && 
+        (!configParams.query || configParams.query.trim() === '')) {
+      throwUserError('Either a collection or a custom query must be specified');
+    }
+    
+    // Get requested fields from the request
+    const requestedFields = request.fields || [];
+    const maxRows = configParams.maxRows && parseInt(configParams.maxRows) > 0 ? 
+                   parseInt(configParams.maxRows) : 1000;
+    
+    // Initialize fields schema
+    let dataSchema = [];
+    
+    // For each requested field, find the matching schema field
+    // Based on looker-studio2.txt example
+    requestedFields.forEach(function(field) {
+      // Find the schema definition for this field
+      for (const schemaField of getSchema(request).schema) {
+        if (schemaField.name === field.name) {
+          dataSchema.push(schemaField);
+          break;
+        }
       }
-      
-      // Create values array IN THE SAME ORDER as requestedFieldIds (and responseSchema)
-      const values = requestedFieldIds.map(fieldId => { 
-         // Handle nested field access (e.g., 'geo.lat')
-         let value = null;
-         if (fieldId.includes('.')) {
-            try {
-               value = fieldId.split('.').reduce((obj, key) => obj && obj[key] !== undefined ? obj[key] : null, dataObject);
-            } catch (e) {
-               value = null; // Handle cases where reduce fails
-            }
-         } else {
-            value = dataObject[fieldId];
-         }
-         return value !== undefined ? value : null;
-       });
-      return { values };
     });
     
-    Logger.log('getData: Returning %s rows based on query: %s', rows.length, queryToRun);
+    // Construct the API URL
+    const columnarUrl = constructApiUrl(path, 18095);
+    const apiUrl = columnarUrl + '/api/v1/request';
+    Logger.log('API URL: %s', apiUrl);
+    
+    // Construct query
+    let query;
+    
+    if (configParams.query && configParams.query.trim() !== '') {
+      // Use the provided custom SQL query
+      query = configParams.query.trim();
+      
+      // Add a LIMIT clause if maxRows is specified and not already present
+      if (maxRows && !query.toLowerCase().includes('limit')) {
+        query += ` LIMIT ${maxRows}`;
+      }
+    } else {
+      // Get the field names for the query
+      const fieldList = requestedFields.map(field => 
+        `\`${field.name}\``
+      ).join(', ');
+      
+      // Construct a simple SELECT query from the collection
+      query = `SELECT ${fieldList} FROM \`${configParams.collection}\``;
+      
+      // Add a LIMIT clause
+      query += ` LIMIT ${maxRows}`;
+    }
+    
+    Logger.log('Executing query: %s', query);
+    
+    // Setup the API request
+    const payload = {
+      statement: query,
+      timeout: '30s'
+    };
+    
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        'Authorization': 'Basic ' + Utilities.base64Encode(username + ':' + password)
+      },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+      validateHttpsCertificates: false
+    };
+    
+    Logger.log('Making API request with options: %s', JSON.stringify({
+      url: apiUrl,
+      method: options.method,
+      headers: options.headers
+    }));
+    
+    // Make the API request
+    const response = UrlFetchApp.fetch(apiUrl, options);
+    const responseCode = response.getResponseCode();
+    const responseBody = response.getContentText();
+    
+    Logger.log('Response code: %s', responseCode);
+    
+    if (responseCode !== 200) {
+      Logger.log('Error response: %s', responseBody);
+      throwUserError(`Error from Couchbase Columnar API: ${responseBody}`);
+    }
+    
+    const parsedResponse = JSON.parse(responseBody);
+    
+    if (parsedResponse.status === 'errors') {
+      Logger.log('API reported errors: %s', JSON.stringify(parsedResponse.errors));
+      throwUserError(`Query error: ${parsedResponse.errors[0].message}`);
+    }
+    
+    // Format results based on Looker Studio requirements - similar to looker-studio2.txt example
+    const rows = [];
+    
+    // Process each row of data
+    if (parsedResponse.results && Array.isArray(parsedResponse.results)) {
+      parsedResponse.results.forEach(function(item) {
+        const row = [];
+        
+        // Add the value for each requested field
+        requestedFields.forEach(function(field) {
+          const fieldName = field.name;
+          let value = item[fieldName];
+          
+          // Handle null values
+          if (value === null || value === undefined) {
+            row.push('');
+          } else if (typeof value === 'number') {
+            row.push(value);
+          } else if (typeof value === 'boolean') {
+            row.push(value);
+          } else {
+            row.push(String(value));
+          }
+        });
+        
+        rows.push({ values: row });
+      });
+    }
+    
+    // Return data in the format required by Looker Studio
     return {
-      schema: responseSchema, // Use the schema ordered according to the request
+      schema: dataSchema,
       rows: rows
     };
-
   } catch (e) {
-    Logger.log('Error during getData: %s', e.toString());
-    Logger.log('getData Exception details: %s', e.stack);
-    throwUserError('Failed to get data: ' + e.message);
+    Logger.log('Error in getData: %s', e.message);
+    throwUserError(`Error retrieving data: ${e.message}`);
   }
 }
 
 /**
- * Fetches data from Couchbase Columnar using the provided configuration.
+ * Processes the API response and formats it for Data Studio.
+ *
+ * @param {Object} response The API response to process.
+ * @param {Fields} requestedFields The requested fields.
+ * @return {Array} The formatted rows.
  */
-function fetchData(configParams) {
-  // Get credentials and URL from configParams (populated by validateConfig)
-  const username = configParams.username;
-  const password = configParams.password;
-  const baseUrl = configParams.baseUrl;
+function processResults(response, requestedFields) {
+  Logger.log('Processing results from API response');
   
-  if (!username || !password || !baseUrl) {
-     Logger.log('fetchData Error: Missing baseUrl, username, or password in configParams.');
-     throw new Error('Configuration error: Connection details missing.');
+  if (!response.results || !Array.isArray(response.results)) {
+    Logger.log('No results found in API response');
+    return [];
   }
-
-  // Bucket and scope are not directly used in Columnar API call payload
-  const query = configParams.query; 
-  const timeout = 30000; 
-
-  // Construct the base API URL using the helper function for Columnar (port 18095)
-  const apiBaseUrl = constructApiUrl(baseUrl, 18095); // Default Columnar port is 18095
-  Logger.log('fetchData: Constructed Columnar API Base URL: %s', apiBaseUrl);
   
-  const queryUrl = apiBaseUrl + '/api/v1/request'; // Use Columnar service path
-  
-  const queryPayload = {
-    statement: query,
-    timeout: timeout + "ms"
-  };
-
-  // query_context is not typically used for Columnar API
-  Logger.log('fetchData: Columnar API call does not use query_context.');
-
-  const options = {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(queryPayload),
-    headers: {
-      Authorization: 'Basic ' + Utilities.base64Encode(username + ':' + password)
-    },
-    muteHttpExceptions: true,
-    validateHttpsCertificates: false 
-  };
-
-  try {
-    Logger.log('fetchData: Sending query to %s', queryUrl);
-    Logger.log('fetchData: Query: %s', query);
-    const response = UrlFetchApp.fetch(queryUrl, options);
-    const responseCode = response.getResponseCode();
-    const responseText = response.getContentText();
-
-    if (responseCode !== 200) {
-      Logger.log('Error querying Couchbase. URL: %s, Code: %s, Response: %s', queryUrl, responseCode, responseText);
-      throw new Error('Error querying Couchbase: [Code: ' + responseCode + '] ' + responseText);
-    }
-
-    Logger.log('fetchData successful for URL: %s', queryUrl);
-    const result = JSON.parse(responseText);
-    if (result.status && result.status !== 'success' && result.errors) {
-      Logger.log('Couchbase query failed. Status: %s, Errors: %s', result.status, JSON.stringify(result.errors));
-      throw new Error('Couchbase query failed: ' + JSON.stringify(result.errors));
-    }
-    return result;
-
-  } catch (e) {
-    Logger.log('Error connecting to Couchbase during fetchData. URL: %s, Exception: %s', queryUrl, e.toString());
-    Logger.log('fetchData Exception details: %s', e.stack);
-    throw new Error('Error connecting to Couchbase: ' + e.toString());
-  }
+  // Map the results to the requested fields
+  return response.results.map(function(row) {
+    const values = [];
+    requestedFields.asArray().forEach(function(field) {
+      const fieldId = field.getId();
+      let value = row[fieldId];
+      
+      // Handle null values
+      if (value === null || value === undefined) {
+        values.push('');
+        return;
+      }
+      
+      // Format values based on field type if needed
+      switch (field.getType()) {
+        case cc.FieldType.NUMBER:
+          // Ensure numeric values are passed as numbers
+          values.push(typeof value === 'number' ? value : Number(value));
+          break;
+        case cc.FieldType.BOOLEAN:
+          // Ensure boolean values are passed as booleans
+          values.push(!!value);
+          break;
+        default:
+          // For strings and other types, convert to string
+          values.push(String(value));
+      }
+    });
+    
+    return { values: values };
+  });
 }
 
 // ==========================================================================
@@ -828,7 +953,7 @@ function fetchData(configParams) {
 
 /**
  * Constructs a full API URL from a user-provided path, ensuring HTTPS
- * and adding a default port if none is specified, *except* for Capella URLs.
+ * and adding a default port if none is specified, *including* for Capella URLs.
  */
 function constructApiUrl(path, defaultPort) {
   let hostAndPort = path;
@@ -851,14 +976,16 @@ function constructApiUrl(path, defaultPort) {
   // Check if port is already present (handles IPv4 and IPv6)
   const hasPort = /:\d+$|]:\d+$/.test(hostAndPort);
 
-  // Add default port ONLY if it's not Capella and no port is specified
-  if (!isCapella && !hasPort && defaultPort) {
+  // Add default port regardless of whether it's Capella
+  if (!hasPort && defaultPort) {
     hostAndPort += ':' + defaultPort;
-    Logger.log('constructApiUrl: Added default port %s for non-Capella URL.', defaultPort);
-  } else if (isCapella) {
-     Logger.log('constructApiUrl: Using standard HTTPS port (443 implied) for Capella URL: %s', hostAndPort);
+    if (isCapella) {
+      Logger.log('constructApiUrl: Added port %s for Capella URL: %s', defaultPort, hostAndPort);
+    } else {
+      Logger.log('constructApiUrl: Added default port %s for URL: %s', defaultPort, hostAndPort);
+    }
   } else if (hasPort) {
-     Logger.log('constructApiUrl: Port already present in URL: %s', hostAndPort);
+    Logger.log('constructApiUrl: Port already present in URL: %s', hostAndPort);
   }
 
   return 'https://' + hostAndPort;
@@ -869,20 +996,10 @@ function constructApiUrl(path, defaultPort) {
  * Used when getData returns no results but schema is needed.
  */
 function getFieldsFromRequest(request) {
-  const fields = [];
-  request.fields.forEach(field => {
-    fields.push({ name: field.name }); 
-  });
-  // Attempt to get full schema definition if possible (requires a fetch)
-  try {
-    const fullSchema = getSchema(request).schema;
-    const requestedFieldsSchema = fullSchema.filter(f => fields.map(rf => rf.name).includes(f.name));
-    return requestedFieldsSchema.length > 0 ? requestedFieldsSchema : fields.map(f => ({ name: f.name, label: f.name, dataType: 'STRING' })); 
-  } catch (e) {
-    // Log the error and fallback if getSchema fails here
-    Logger.log('getFieldsFromRequest: Failed to get full schema, falling back to basic schema. Error: %s', e.toString());
-    return fields.map(f => ({ name: f.name, label: f.name, dataType: 'STRING' }));
-  }
+  const fields = cc.getFields();
+  const requestedFieldIds = request.fields.map(field => field.name);
+  
+  return fields.forIds(requestedFieldIds);
 }
 
 /**
