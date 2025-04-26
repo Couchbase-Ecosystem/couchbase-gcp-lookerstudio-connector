@@ -5,17 +5,21 @@ require('dotenv').config(); // Load environment variables from .env file
 
 // Configuration
 const config = {
-  baseUrl: process.env.CB_COLUMNAR_URL || 'https://localhost:18095',
+  // Base URL is now preferentially loaded from .env, otherwise uses the default.
+  baseUrl: process.env.CB_COLUMNAR_URL || 'https://localhost:18095', // Adjusted default for local testing
   auth: {
-    username: process.env.CB_USERNAME || 'kaustav',
-    password: process.env.CB_PASSWORD || 'Password@123'
+    // Credentials MUST be loaded from the .env file
+    username: process.env.CB_USERNAME,
+    password: process.env.CB_PASSWORD
   },
-  rejectUnauthorized: false // Set to false to disable SSL certificate verification
+  // Allow overriding SSL verification via environment variable
+  // rejectUnauthorized: process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0' // Defaults to true unless overridden
+  rejectUnauthorized: false // Explicitly disable SSL verification
 };
 
 // Create HTTPS agent for handling SSL verification
 const httpsAgent = new https.Agent({
-  rejectUnauthorized: false // Explicitly disable SSL verification
+  rejectUnauthorized: config.rejectUnauthorized
 });
 
 // Create axios instance with authentication and the custom HTTPS agent
