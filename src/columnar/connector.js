@@ -589,8 +589,16 @@ function getSchema(request) {
         baseQuery : 
         `${baseQuery} LIMIT 1`;
     } else if (configParams.collection) {
-      // Simple SELECT from collection with LIMIT 1
-      query = `SELECT * FROM \`${configParams.collection}\` LIMIT 1`;
+      // Collection path needs to be properly formatted with separate backticks for each part
+      const collectionParts = configParams.collection.split('.');
+      
+      if (collectionParts.length === 3) {
+        // Properly format as `bucket`.`scope`.`collection`
+        query = `SELECT * FROM \`${collectionParts[0]}\`.\`${collectionParts[1]}\`.\`${collectionParts[2]}\` LIMIT 1`;
+      } else {
+        // Fallback if the format is unexpected
+        query = `SELECT * FROM \`${configParams.collection}\` LIMIT 1`;
+      }
     } else {
       throwUserError('Configuration Error: No query or collection specified');
     }
@@ -910,8 +918,16 @@ function getData(request) {
         `\`${field.name}\``
       ).join(', ');
       
-      // Construct a simple SELECT query from the collection
-      query = `SELECT ${fieldList} FROM \`${configParams.collection}\``;
+      // Collection path needs to be properly formatted with separate backticks for each part
+      const collectionParts = configParams.collection.split('.');
+      
+      if (collectionParts.length === 3) {
+        // Properly format as `bucket`.`scope`.`collection`
+        query = `SELECT ${fieldList} FROM \`${collectionParts[0]}\`.\`${collectionParts[1]}\`.\`${collectionParts[2]}\``;
+      } else {
+        // Fallback if the format is unexpected
+        query = `SELECT ${fieldList} FROM \`${configParams.collection}\``;
+      }
       
       // Add a LIMIT clause
       query += ` LIMIT ${maxRows}`;
