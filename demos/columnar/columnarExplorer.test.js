@@ -12,7 +12,7 @@ async function executeQuery(query) {
   console.log(`\nExecuting query: ${query}`);
   try {
     const response = await columnarClient.submitRequest(query);
-    console.log('Query executed successfully:', response);
+    console.log('Query executed successfully');
     return response;
   } catch (error) {
     console.error('Error executing query:', error.message);
@@ -20,84 +20,109 @@ async function executeQuery(query) {
   }
 }
 
-// Try to list all collections
-async function listAllCollections() {
-  console.log('\nAttempting to list all collections:');
-  // In Columnar, collections are within keyspaces
-  return await executeQuery('SELECT * FROM system:all_keyspaces');
-}
-
-// Try a simple query on travel-sample data if it exists
-async function tryTravelSampleQuery() {
-  console.log('\nAttempting to query travel-sample data:');
-  try {
-    // Try different possible paths for travel-sample
-    const queries = [
-      'SELECT * FROM `travel-sample`.inventory.airline LIMIT 5',
-      'SELECT * FROM travel_sample.inventory.airline LIMIT 5',
-      'SELECT * FROM `travel-sample`.`inventory`.`airline` LIMIT 5'
-    ];
-    
-    for (const query of queries) {
-      console.log(`\nTrying query: ${query}`);
-      try {
-        const response = await columnarClient.submitRequest(query);
-        console.log('Query successful! Sample airline data:');
-        if (response.results && response.results.length > 0) {
-          response.results.forEach((row, index) => {
-            console.log(`[${index + 1}] ${JSON.stringify(row)}`);
-          });
-          return response;
-        } else {
-          console.log('No data returned.');
-        }
-      } catch (error) {
-        console.error('Query failed:', error.message);
-      }
-    }
-    
-    console.log('All travel-sample queries failed. Travel-sample may not be loaded.');
-    return null;
-  } catch (error) {
-    console.error('Error in tryTravelSampleQuery:', error.message);
-    return null;
+// Show query results in a more readable format
+function displayResults(response, label = 'Results') {
+  if (response && response.results && response.results.length > 0) {
+    console.log(`\n${label}: (${response.results.length} items)`);
+    response.results.forEach((row, index) => {
+      console.log(`[${index + 1}] ${JSON.stringify(row)}`);
+    });
+    return true;
+  } else if (response) {
+    console.log(`\nNo results returned for this query.`);
+    return false;
+  } else {
+    console.log(`\nQuery failed or returned null response.`);
+    return false;
   }
 }
 
-// Get information about the Columnar service
-async function getServiceInfo() {
-  console.log('\nAttempting to get Columnar service information:');
+// Explore the travel-sample bucket structure
+async function exploreTravelSample() {
+  console.log('\n--- EXPLORING TRAVEL SAMPLE DATA ---');
   
-  // Try different system keyspaces
-  const systemQueries = [
-    'SELECT * FROM system:datastores',
-    'SELECT * FROM system:namespaces',
-    'SELECT * FROM system:keyspaces',
-    'SELECT * FROM system:dual'
-  ];
+  // Get a list of airlines
+  const airlinesResponse = await executeQuery('SELECT * FROM `travel-sample`.inventory.airline LIMIT 5');
+  displayResults(airlinesResponse, 'Airlines');
   
-  for (const query of systemQueries) {
-    try {
-      console.log(`\nTrying system query: ${query}`);
-      const response = await columnarClient.submitRequest(query);
-      console.log('System query successful:');
-      if (response.results && response.results.length > 0) {
-        response.results.forEach((row, index) => {
-          console.log(`[${index + 1}] ${JSON.stringify(row)}`);
-        });
-      } else {
-        console.log('No data returned.');
-      }
-    } catch (error) {
-      console.error(`System query ${query} failed:`, error.message);
-    }
-  }
+  // Get a list of airports
+  const airportsResponse = await executeQuery('SELECT * FROM `travel-sample`.inventory.airport LIMIT 5');
+  displayResults(airportsResponse, 'Airports');
+  
+  // Get a list of hotels
+  const hotelsResponse = await executeQuery('SELECT * FROM `travel-sample`.inventory.hotel LIMIT 5');
+  displayResults(hotelsResponse, 'Hotels');
+  
+  // Get a list of routes
+  const routesResponse = await executeQuery('SELECT * FROM `travel-sample`.inventory.route LIMIT 5');
+  displayResults(routesResponse, 'Routes');
+  
+  // Get a list of landmarks
+  const landmarksResponse = await executeQuery('SELECT * FROM `travel-sample`.inventory.landmark LIMIT 5');
+  displayResults(landmarksResponse, 'Landmarks');
 }
 
-// Try to run a simple calculation query
-async function testSimpleQuery() {
-  console.log('\nTesting simple calculation query:');
-  return await executeQuery('SELECT 1+1 AS sum');
+// Try some simple analysis queries
+async function runAnalysisQueries() {
+  console.log('\n--- RUNNING ANALYSIS QUERIES ---');
+  
+  // Get count of airlines by country
+  const countriesResponse = await executeQuery(`
+    SELECT a.airline.country as country, COUNT(*) as airline_count 
+    FROM \`travel-sample\`.inventory.airline a 
+    WHERE a.airline.country IS NOT NULL 
+    GROUP BY a.airline.country 
+    ORDER BY COUNT(*) DESC 
+    LIMIT 10
+  `);
+  displayResults(countriesResponse, 'Airlines by Country');
+  
+  // Find airports in United States
+  const usAirportsResponse = await executeQuery(`
+    SELECT a.airport.city, a.airport.airportname, a.airport.country
+    FROM \`travel-sample\`.inventory.airport a
+    WHERE a.airport.country = "United States"
+    LIMIT 10
+  `);
+  displayResults(usAirportsResponse, 'US Airports');
+  
+  // Find routes from San Francisco
+  const sfRoutesResponse = await executeQuery(`
+    SELECT r.route.airline, r.route.sourceairport, r.route.destinationairport, r.route.stops
+    FROM \`travel-sample\`.inventory.route r
+    WHERE r.route.sourceairport = "SFO"
+    LIMIT 10
+  `);
+  displayResults(sfRoutesResponse, 'Routes from SFO');
+  
+  // Find hotels in London
+  const londonHotelsResponse = await executeQuery(`
+    SELECT h.hotel.name, h.hotel.address, h.hotel.phone
+    FROM \`travel-sample\`.inventory.hotel h
+    WHERE h.hotel.city = "London"
+    LIMIT 10
+  `);
+  displayResults(londonHotelsResponse, 'London Hotels');
+}
+
+// Try a more complex join query
+async function runJoinQueries() {
+  console.log('\n--- RUNNING JOIN QUERIES ---');
+  
+  // Join airports and routes to find destinations from San Francisco
+  const sfoJoinResponse = await executeQuery(`
+    SELECT a.airport.airportname as destination, 
+           a.airport.city as destination_city,
+           a.airport.country as destination_country,
+           r.route.airline as airline,
+           r.route.stops as stops
+    FROM \`travel-sample\`.inventory.route r
+    JOIN \`travel-sample\`.inventory.airport a
+    ON r.route.destinationairport = a.airport.faa
+    WHERE r.route.sourceairport = "SFO"
+    LIMIT 10
+  `);
+  displayResults(sfoJoinResponse, 'Destinations from SFO with Airport Details');
 }
 
 // Main function to run the explorer
@@ -105,17 +130,23 @@ async function runExplorer() {
   console.log('Initializing Couchbase Columnar Explorer...');
 
   try {
-    // First, test if we can run a simple query
-    await testSimpleQuery();
+    // Test basic connectivity with a simple query
+    const testResponse = await executeQuery('SELECT 1+1 AS sum');
+    if (testResponse) {
+      console.log('Basic connectivity test passed. Sum =', testResponse.results[0].sum);
+    } else {
+      console.error('Basic connectivity test failed. Cannot continue.');
+      return;
+    }
     
-    // Try to get system information
-    await getServiceInfo();
+    // Explore the travel-sample bucket structure
+    await exploreTravelSample();
     
-    // Try to list all collections
-    await listAllCollections();
+    // Run some analysis queries
+    await runAnalysisQueries();
     
-    // Try to query travel-sample data
-    await tryTravelSampleQuery();
+    // Run some join queries
+    await runJoinQueries();
     
     console.log('\nCouchbase Columnar Explorer complete!');
   } catch (error) {
@@ -131,9 +162,9 @@ if (require.main === module) {
 // Export functions for use in other files
 module.exports = {
   executeQuery,
-  listAllCollections,
-  tryTravelSampleQuery,
-  getServiceInfo,
-  testSimpleQuery,
+  displayResults,
+  exploreTravelSample,
+  runAnalysisQueries,
+  runJoinQueries,
   runExplorer
 }; 
