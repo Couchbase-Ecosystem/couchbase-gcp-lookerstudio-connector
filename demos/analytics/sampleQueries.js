@@ -1,5 +1,3 @@
-// demos/sampleQueries.js
-
 // Load environment variables from .env file in the same directory
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });

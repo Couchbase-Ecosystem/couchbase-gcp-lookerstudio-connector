@@ -1,5 +1,3 @@
-// couchbaseColumnarClient.js
-
 /**
  * Submits a DDL, DML, or query request. The requestBody object can include a `client_context_id` property.
  * @param {object} requestBody - The request payload (DDL, DML, or query). Can include `client_context_id`.
