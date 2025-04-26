@@ -242,5 +242,6 @@ module.exports = {
   getLink,
   createLink,
   updateLink,
-  deleteLink
+  deleteLink,
+  getBaseUrl: () => fullBaseUrl
 }; 
