@@ -547,11 +547,49 @@ function buildSchema(result) {
        }
        return; // Stop processing this level for nested objects
     } else if (Array.isArray(value)){
-        // Skip arrays
-        return;
+        // --- Modification Start: Handle Arrays for Aggregation ---
+        if (value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
+          // Array of Objects: Create aggregated string fields
+          const arrayPrefix = fieldName; // Use the current fieldName as the prefix (e.g., 'schedule')
+          const allKeys = new Set();
+          Object.keys(value[0]).forEach(key => allKeys.add(key)); // Assume consistent keys based on first item
+
+          Logger.log('addFieldToSchema (Array of Objects): Found keys [%s] for prefix \'%s\'', Array.from(allKeys).join(', '), arrayPrefix);
+          
+          Array.from(allKeys).forEach(key => {
+            const aggFieldName = `${arrayPrefix}.${key}`; // e.g., schedule.day
+            // Check if field already exists before pushing
+            if (!schema.some(f => f.name === aggFieldName)) {
+              schema.push({
+                name: aggFieldName,
+                label: aggFieldName,
+                dataType: 'STRING', 
+                semantics: { conceptType: 'DIMENSION' } 
+              });
+              Logger.log('addFieldToSchema (Array of Objects): Added aggregated field: %s', aggFieldName);
+            }
+          });
+        } else if (value.length > 0) {
+           // Array of Primitives: Create one aggregated string field
+           const aggFieldName = fieldName; // Use the current fieldName (e.g., 'aliases')
+           if (!schema.some(f => f.name === aggFieldName)) {
+             schema.push({
+               name: aggFieldName,
+               label: aggFieldName,
+               dataType: 'STRING', 
+               semantics: { conceptType: 'DIMENSION' } 
+             });
+             Logger.log('addFieldToSchema (Array of Primitives): Added aggregated field: %s', aggFieldName);
+           }
+        } else {
+          // Empty array: Skip (consistent with original logic)
+          Logger.log('addFieldToSchema: Skipping empty array for key: %s', fieldName);
+        }
+        return; // Stop processing after handling the array
+        // --- Modification End ---
     } // Otherwise, it remains STRING/DIMENSION
     
-    // --- Check against existing schema entry --- 
+    // --- Check against existing schema entry (for primitive types determined above) --- 
     const existingFieldIndex = schema.findIndex(field => field.name === fieldName);
 
     if (existingFieldIndex === -1) {
@@ -701,30 +739,56 @@ function getData(request) {
 
     // Map data rows to the expected { values: [...] } format
     const rows = result.results.map(row => {
-      // Handle potentially nested results (common in Couchbase N1QL)
-      let dataObject = row;
-      const keys = Object.keys(row);
-      if (keys.length === 1 && typeof row[keys[0]] === 'object' && row[keys[0]] !== null) {
-         dataObject = row[keys[0]];
-      }
-      
-      // Create values array IN THE SAME ORDER as requestedFieldIds (and responseSchema)
-      const values = requestedFieldIds.map(fieldId => { 
-         // Handle nested field access (e.g., 'geo.lat')
-         let value = null;
-         if (fieldId.includes('.')) {
-            try {
-               value = fieldId.split('.').reduce((obj, key) => obj && obj[key] !== undefined ? obj[key] : null, dataObject);
-            } catch (e) {
-               value = null; // Handle cases where reduce fails
-            }
+       // Handle potentially nested results (common in Couchbase N1QL)
+       let dataObject = row;
+       const keys = Object.keys(row);
+       let keyPrefix = ''; // Keep track if we extracted data from a nested key
+       if (keys.length === 1 && typeof row[keys[0]] === 'object' && row[keys[0]] !== null) {
+          dataObject = row[keys[0]];
+          keyPrefix = keys[0] + '.'; // e.g., "route."
+       }
+       
+       // Create values array IN THE SAME ORDER as requestedFieldIds (and responseSchema)
+       const values = requestedFieldIds.map(fieldId => { 
+          // --- Modification Start: Refined Value Extraction Logic ---
+          // Determine the path relative to the dataObject
+          let relativePath = fieldId;
+          if (keyPrefix && fieldId.startsWith(keyPrefix)) {
+            relativePath = fieldId.substring(keyPrefix.length); 
+          } else if (keyPrefix && !fieldId.startsWith(keyPrefix)){
+             Logger.log('getData (Row): WARNING - fieldId [%s] does not match result key prefix [%s]', fieldId, keyPrefix);
+             relativePath = fieldId; 
+          }
+
+         const relativeParts = relativePath.split('.');
+         const basePart = relativeParts[0]; // e.g., schedule or stops
+         const nestedPart = relativeParts.length > 1 ? relativeParts.slice(1).join('.') : null; // e.g., day or null
+
+         // Get the data corresponding to the base part *within* the dataObject
+         const sourceForCheck = dataObject ? dataObject[basePart] : undefined;
+
+         if (nestedPart && Array.isArray(sourceForCheck)) {
+             // CASE 1: Aggregated Array Field (e.g., schedule.day)
+             const aggregatedValues = sourceForCheck
+                 .map(item => {
+                     let itemValue = (item && typeof item === 'object') ? getNestedValue(item, nestedPart) : item; 
+                     return (itemValue === null || itemValue === undefined) ? '' : String(itemValue); 
+                 })
+                 .join(', '); 
+             value = aggregatedValues;
+             // Optional detailed logging for first few rows
+             // if (result.results.indexOf(row) < 3) Logger.log(...)
          } else {
-            value = dataObject[fieldId];
+             // CASE 2: Simple Field or Nested Object Field (e.g., airline, address.city, stops)
+             value = getNestedValue(dataObject, relativePath); 
+              // Optional detailed logging for first few rows
+             // if (result.results.indexOf(row) < 3) Logger.log(...)
          }
-         return value !== undefined ? value : null;
+         // --- Modification End ---
+         return value !== undefined ? value : null; // Return null if value is undefined
        });
-      return { values };
-    });
+       return { values };
+     });
     
     Logger.log('getData: Returning %s rows based on query: %s', rows.length, queryToRun);
     return {
@@ -812,6 +876,33 @@ function fetchData(configParams) {
 // ==========================================================================
 // ===                            UTILITIES                               ===
 // ==========================================================================
+
+/**
+ * Helper function to get nested values by path including arrays.
+ * Handles paths like "schedule.day" or "address.geo.lat".
+ */
+function getNestedValue(obj, path) {
+  // Handle array notation like "schedule[0].day" - although not expected in this connector's output format
+  // Primarily needed for simple dot notation like "address.city"
+  const parts = path.replace(/\[(\d+)\]/g, '.$1').split('.');
+  let current = obj;
+  
+  for (let i = 0; i < parts.length; i++) {
+    if (current === null || current === undefined) {
+      return null; // Return null if any part of the path is null/undefined
+    }
+    
+    const key = parts[i];
+    // Check if key exists before accessing
+    if (typeof current === 'object' && key in current) {
+       current = current[key];
+    } else {
+       return null; // Key not found in the current object level
+    }
+  }
+  
+  return current;
+}
 
 /**
  * Constructs a full API URL from a user-provided path, ensuring HTTPS
