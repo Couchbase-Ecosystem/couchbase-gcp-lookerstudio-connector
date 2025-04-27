@@ -542,24 +542,61 @@ function validateConfig(configParams) {
 function getRequestedFields(request) {
   const cc = DataStudioApp.createCommunityConnector();
   const requestedFields = cc.getFields(); // Start with an empty Fields object
-  const requestedFieldIds = request.fields.map(field => field.name);
   
   // Log the raw request fields for inspection
   Logger.log('getRequestedFields: Raw request.fields from Looker Studio: %s', JSON.stringify(request.fields));
-  Logger.log('getRequestedFields: Extracted field IDs: %s', JSON.stringify(requestedFieldIds));
 
-  // Populate the Fields object ONLY with what was requested
+  // Populate the Fields object using the information provided in the request
   request.fields.forEach(fieldInfo => {
-    // Add the field requested by Looker Studio.
-    // We assume getSchema has already defined the field and its type correctly.
-    // Looker Studio uses the schema from getSchema, getData just provides the data for the requested subset.
-    // We still need to return a Fields object representing this subset for the getData response structure.
-    // Defaulting to TEXT here might be okay if Looker Studio primarily relies on the getSchema definition.
-    Logger.log('getRequestedFields: Adding field to response schema: %s', fieldInfo.name);
-    requestedFields.newDimension()
-      .setId(fieldInfo.name)
-      .setName(fieldInfo.name) // Use the name from the request
-      .setType(cc.FieldType.TEXT); // Defaulting type, actual type mapping happens based on getSchema
+    // Looker Studio provides the name and the inferred type/aggregation.
+    // We need to respect this when building the Fields object for the getData response.
+    Logger.log('getRequestedFields: Adding field [%s] to response schema', fieldInfo.name);
+    
+    // Fetch the full schema first
+    const fullSchema = getSchema(request).schema; // Assuming getSchema is idempotent and fast enough
+    
+    // Find the definition for the current requested field
+    const fieldDefinition = fullSchema.find(field => field.name === fieldInfo.name);
+    
+    if (fieldDefinition) {
+       Logger.log('getRequestedFields: Found definition for [%s]: Type=%s, Concept=%s', 
+                  fieldInfo.name, fieldDefinition.dataType, fieldDefinition.semantics.conceptType);
+                  
+       // Map schema string type to Apps Script FieldType enum
+       let fieldTypeEnum;
+       switch (fieldDefinition.dataType) {
+         case 'NUMBER':
+           fieldTypeEnum = cc.FieldType.NUMBER;
+           break;
+         case 'BOOLEAN':
+           fieldTypeEnum = cc.FieldType.BOOLEAN;
+           break;
+         case 'STRING': // Fallthrough for STRING and any other unhandled types
+         default:
+           fieldTypeEnum = cc.FieldType.TEXT; // Default to TEXT
+           break;
+       }
+       
+       if (fieldDefinition.semantics.conceptType === 'METRIC') {
+         requestedFields.newMetric()
+           .setId(fieldDefinition.name)
+           .setName(fieldDefinition.name) 
+           .setType(fieldTypeEnum); // Use the mapped enum
+           // .setAggregation(fieldDefinition.semantics.aggregationType); // If available
+       } else { // DIMENSION
+         requestedFields.newDimension()
+           .setId(fieldDefinition.name)
+           .setName(fieldDefinition.name)
+           .setType(fieldTypeEnum); // Use the mapped enum
+       }
+    } else {
+       // Fallback if field definition not found (should not happen ideally)
+       Logger.log('getRequestedFields: WARNING - Field definition not found for [%s] in full schema. Defaulting to TEXT Dimension.', fieldInfo.name);
+       requestedFields.newDimension()
+         .setId(fieldInfo.name)
+         .setName(fieldInfo.name)
+         .setType(cc.FieldType.TEXT);
+    } 
   });
 
   // Log the fields object *before* returning
@@ -1160,11 +1197,12 @@ function getData(request) {
 
       requestedFieldsObject.asArray().forEach(field => { // Use the Fields object here
         const fieldName = field.getId();
+        const fieldType = field.getType(); // Get the type defined in the schema
         let value = null; // Default value
 
         // Log field being processed
         if (results.indexOf(result) < 3) {
-           Logger.log('getData (Row %s): Processing field: %s', results.indexOf(result), fieldName);
+           Logger.log('getData (Row %s): Processing field: %s (Type: %s)', results.indexOf(result), fieldName, fieldType);
         }
 
         // Directly access the value from the processed (flattened) result
@@ -1173,17 +1211,58 @@ function getData(request) {
 
         // Log the retrieved value
         if (results.indexOf(result) < 3) { // Log first 3 rows
-           Logger.log('getData (Row %s): Value for [%s]: %s', results.indexOf(result), fieldName, JSON.stringify(value));
+           Logger.log('getData (Row %s): Raw value for [%s]: %s', results.indexOf(result), fieldName, JSON.stringify(value));
         }
         
-        // Process and push value
+        // Process and push value based on schema type
+        let formattedValue = null;
         if (value === null || value === undefined) {
-          values.push('');
-        } else if (typeof value === 'object') {
-          values.push(JSON.stringify(value));
+          formattedValue = ''; // Use empty string for null/undefined to match previous behavior
         } else {
-          values.push(value.toString());
+          switch (fieldType) {
+            case DataStudioApp.createCommunityConnector().FieldType.NUMBER:
+              formattedValue = Number(value);
+              if (isNaN(formattedValue)) {
+                formattedValue = null; // Send null if conversion fails
+                Logger.log('getData (Row %s): Failed to convert value "%s" to NUMBER for field [%s]. Sending null.', results.indexOf(result), value, fieldName);
+              }
+              break;
+            case DataStudioApp.createCommunityConnector().FieldType.BOOLEAN:
+              // Handle common string representations of boolean
+              if (typeof value === 'string') {
+                const lowerValue = value.toLowerCase();
+                if (lowerValue === 'true') {
+                  formattedValue = true;
+                } else if (lowerValue === 'false') {
+                  formattedValue = false;
+                } else {
+                   formattedValue = null; // Or some default? Sending null if ambiguous.
+                   Logger.log('getData (Row %s): Ambiguous boolean string "%s" for field [%s]. Sending null.', results.indexOf(result), value, fieldName);
+                }
+              } else {
+                 formattedValue = Boolean(value); // Standard JS boolean conversion
+              }
+              break;
+            // Add cases for YEAR_MONTH_DAY etc. if needed, formatting to YYYYMMDDhhmmss
+            // case DataStudioApp.createCommunityConnector().FieldType.YEAR_MONTH_DAY:
+            //   // Attempt to format 'value' into YYYYMMDD string
+            //   break; 
+            default: // STRING and others
+              if (typeof value === 'object') {
+                formattedValue = JSON.stringify(value);
+              } else {
+                formattedValue = value.toString();
+              }
+              break;
+          }
         }
+
+        // Log the formatted value before pushing
+        if (results.indexOf(result) < 3) {
+          Logger.log('getData (Row %s): Formatted value for [%s]: %s', results.indexOf(result), fieldName, JSON.stringify(formattedValue));
+        }
+        
+        values.push(formattedValue); 
       });
       
       // Log the final values array for the row
