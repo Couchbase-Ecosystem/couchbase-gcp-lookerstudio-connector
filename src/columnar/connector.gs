@@ -648,9 +648,73 @@ function processDocument(document) {
     return result;
   }
   
-  // If it's not a prefixed document, return as is
-  Logger.log('processDocument: No prefix detected, returning document as is.');
-  return document;
+  // For documents without prefix, we still need to process arrays properly
+  const result = {};
+  
+  // Helper function to flatten arrays and nested objects
+  function flattenObject(obj, parentKey = '') {
+    if (typeof obj !== 'object' || obj === null) {
+      return { [parentKey]: obj };
+    }
+    
+    let flattened = {};
+    
+    if (Array.isArray(obj)) {
+      // For arrays of objects, generate fields for each key in each item
+      if (obj.length > 0 && typeof obj[0] === 'object' && obj[0] !== null) {
+        // Find all possible keys in the array objects
+        const allKeys = new Set();
+        obj.forEach(item => {
+          if (item && typeof item === 'object') {
+            Object.keys(item).forEach(key => allKeys.add(key));
+          }
+        });
+        
+        // Create a flattened field for each key in each item
+        Array.from(allKeys).forEach(key => {
+          obj.forEach((item, index) => {
+            if (item && typeof item === 'object' && key in item) {
+              const flatKey = `${parentKey}[${index}].${key}`;
+              flattened[flatKey] = item[key];
+            }
+          });
+        });
+      } else {
+        // For arrays of primitives
+        obj.forEach((item, index) => {
+          flattened[`${parentKey}[${index}]`] = item;
+        });
+      }
+    } else {
+      // For regular objects
+      Object.keys(obj).forEach(key => {
+        const newKey = parentKey ? `${parentKey}.${key}` : key;
+        
+        if (typeof obj[key] === 'object' && obj[key] !== null) {
+          // Recursively flatten nested objects/arrays
+          Object.assign(flattened, flattenObject(obj[key], newKey));
+        } else {
+          flattened[newKey] = obj[key];
+        }
+      });
+    }
+    
+    return flattened;
+  }
+  
+  // Flatten the top-level properties
+  Object.keys(document).forEach(key => {
+    if (typeof document[key] === 'object' && document[key] !== null) {
+      // For objects and arrays, use the flattening helper
+      Object.assign(result, flattenObject(document[key], key));
+    } else {
+      // For primitives, just copy the value
+      result[key] = document[key];
+    }
+  });
+  
+  Logger.log('processDocument: Final flattened document: %s', JSON.stringify(result));
+  return result;
 }
 
 /**
@@ -706,39 +770,52 @@ function getSchema(request) {
       
       // Process based on type
       if (Array.isArray(obj)) {
-        // For arrays, examine the first element if it exists
-        if (obj.length > 0) {
-          if (typeof obj[0] === 'object' && obj[0] !== null) {
-            // For arrays of objects, process each field in the first object
-            const arrayFields = processFields(obj[0], prefix);
-            return arrayFields.map(field => {
-              // Mark array fields
-              field.name = prefix ? `${prefix}[0].${field.name.split('.').pop()}` : field.name;
-              field.label = field.name;
-              return field;
-            });
-          } else {
-            // For arrays of primitives, create a single field
-            return [{
-              name: prefix || 'array',
-              label: prefix || 'Array',
-              dataType: getDataType(obj[0]),
+        // --- Modification Start: Handle Arrays for Aggregation ---
+        if (obj.length > 0 && typeof obj[0] === 'object' && obj[0] !== null) {
+          // Array of Objects: Create aggregated string fields
+          const arrayPrefix = prefix ? `${prefix}` : 'array'; // e.g., 'route.schedule'
+          const allKeys = new Set();
+          
+          // Collect all unique keys from the *first* object (assuming consistent structure)
+          // A more robust approach might sample multiple objects
+          Object.keys(obj[0]).forEach(key => allKeys.add(key));
+
+          Logger.log('processFields (Array of Objects): Found keys [%s] for prefix \'%s\'', Array.from(allKeys).join(', '), arrayPrefix);
+          
+          // Create one aggregated field per key
+          Array.from(allKeys).forEach(key => {
+            const fieldName = `${arrayPrefix}.${key}`; // e.g., route.schedule.day
+            fields.push({
+              name: fieldName,
+              label: fieldName,
+              dataType: 'STRING', // Always STRING for concatenated values
               semantics: {
-                conceptType: 'DIMENSION'
+                conceptType: 'DIMENSION' // Always DIMENSION 
               }
-            }];
-          }
+            });
+             Logger.log('processFields (Array of Objects): Added aggregated field: %s', fieldName);
+          });
+          
+          return fields;
+        } else if (obj.length > 0) {
+           // Array of Primitives: Create one aggregated string field
+           const fieldName = prefix || 'array'; // Use the prefix as the field name
+           fields.push({
+             name: fieldName,
+             label: fieldName,
+             dataType: 'STRING', 
+             semantics: {
+               conceptType: 'DIMENSION'
+             }
+           });
+            Logger.log('processFields (Array of Primitives): Added aggregated field: %s', fieldName);
+           return fields;
         } else {
-          // Empty array
-          return [{
-            name: prefix || 'array',
-            label: prefix || 'Array',
-            dataType: 'STRING',
-            semantics: {
-              conceptType: 'DIMENSION'
-            }
-          }];
+          // Empty array: Generate no fields (consistent with previous logic)
+          Logger.log('processFields: Skipping empty array at prefix \'%s\'', prefix || 'root');
+          return []; 
         }
+        // --- Modification End ---
       } else if (typeof obj === 'object') {
         // Process each property in the object
         Object.keys(obj).forEach(key => {
@@ -755,7 +832,7 @@ function getSchema(request) {
               }
             });
           } else if (typeof value === 'object') {
-            // Recursively process nested objects
+            // Recursively process nested objects and arrays
             fields.push(...processFields(value, newPrefix));
           } else {
             // Add field for primitive values
@@ -832,9 +909,6 @@ function getSchema(request) {
       
       if (!sampleQuery.toLowerCase().includes('limit')) {
         sampleQuery += ' LIMIT 1';
-      } else {
-        // Modify existing LIMIT clause to limit 1
-        sampleQuery = sampleQuery.replace(/LIMIT\s+\d+/i, 'LIMIT 1');
       }
     } else if (configParams.collection && configParams.collection.trim() !== '') {
       // Construct query based on collection
@@ -1125,16 +1199,29 @@ function getData(request) {
 
       // Construct the SELECT clause
       let selectClause = '*'; // Default to * if no fields requested
+      const requiredSourceFields = new Set(); // Keep track of top-level fields needed from Couchbase
+
       if (requestedFieldIds && requestedFieldIds.length > 0) { // Use the extracted array
-          selectClause = requestedFieldIds.map(function(fieldId) {
-              // Escape the full fieldId path if it contains dots, and alias it
-              // Assume fieldId is like "airline.country"
-              // Output should be `airline`.`country` AS `airline.country`
-              const pathParts = fieldId.split('.');
-              const escapedPath = pathParts.map(part => '`' + part + '`').join('.');
-              // Use simple quotes for the alias string literal
-              return escapedPath + ' AS `' + fieldId + '`'; 
-          }).join(', ');
+          // Identify the base fields needed for the requested aggregated/nested fields
+          requestedFieldIds.forEach(fieldId => {
+            // If fieldId is like 'schedule.day', we need the 'schedule' field.
+            // If fieldId is like 'address.city', we need the 'address' field.
+            // If fieldId is just 'airline', we need the 'airline' field.
+            const baseField = fieldId.split('.')[0].split('[')[0]; // Get the part before the first '.' or '['
+            requiredSourceFields.add(baseField);
+          });
+          
+          // Select only the required base fields, escaping them
+          selectClause = Array.from(requiredSourceFields)
+                          .map(baseField => '`' + baseField + '`')
+                          .join(', ');
+
+          // If requiredSourceFields is empty (e.g., query error), default back to *
+          if (selectClause.trim() === '') {
+              Logger.log('getData: Warning - Could not determine base fields, defaulting SELECT to *');
+              selectClause = '*';
+          }
+          
       } else {
          Logger.log('getData: No specific fields requested, using SELECT *');
       }
@@ -1183,8 +1270,9 @@ function getData(request) {
       throwUserError('Invalid response from Couchbase API: ' + e.message);
     }
     
-    // Helper function to get nested values
+    // Helper function to get nested values by path including arrays
     function getNestedValue(obj, path) {
+      // Handle array notation like "schedule[0].day"
       const parts = path.replace(/\[(\d+)\]/g, '.$1').split('.');
       let current = obj;
       
@@ -1192,7 +1280,15 @@ function getData(request) {
         if (current === null || current === undefined) {
           return null;
         }
-        current = current[parts[i]];
+        
+        // Handle array index when the key is a number
+        const key = parts[i];
+        if (!isNaN(key) && Array.isArray(current)) {
+          const index = parseInt(key, 10);
+          current = index < current.length ? current[index] : null;
+        } else {
+          current = current[key];
+        }
       }
       
       return current;
@@ -1203,19 +1299,36 @@ function getData(request) {
     const rows = [];
     
     results.forEach(result => {
-      // Process document to get correctly formatted field names
-      const processedResult = processDocument(result);
+      // --- Modification Start: Determine actual data object ---
+      // Handle cases where results are nested under a single key (common pattern)
+      let dataObject = result;
+      const keys = Object.keys(result);
+      // If the result has exactly one key, and the value under that key is an object,
+      // assume the actual document data is nested under that key.
+      let keyPrefix = ''; // Keep track if we extracted data from a nested key
+      if (keys.length === 1 && result[keys[0]] !== null && typeof result[keys[0]] === 'object') {
+          dataObject = result[keys[0]];
+          keyPrefix = keys[0] + '.'; // e.g., "route."
+          if (results.indexOf(result) < 3) { // Log first 3 rows
+              Logger.log('getData (Row %s): Using nested data under key: %s', results.indexOf(result), keys[0]);
+          }
+      } else {
+         if (results.indexOf(result) < 3) { // Log first 3 rows
+             Logger.log('getData (Row %s): Using top-level result object.', results.indexOf(result));
+         }
+      }
+      // --- Modification End ---
+      
       const values = [];
       
-      // Log the raw result and processed result for the row
+      // Log the raw result for the row
       if (results.indexOf(result) < 3) { // Log first 3 rows
-        Logger.log('getData (Row %s): Raw result: %s', results.indexOf(result), JSON.stringify(result));
-        Logger.log('getData (Row %s): Processed result: %s', results.indexOf(result), JSON.stringify(processedResult));
+        Logger.log('getData (Row %s): Raw dataObject being used: %s', results.indexOf(result), JSON.stringify(dataObject));
       }
 
       requestedFieldsObject.asArray().forEach(field => { // Use the Fields object here
-        const fieldName = field.getId();
-        const fieldType = field.getType(); // Get the type defined in the schema
+        const fieldName = field.getId(); // e.g., airline or schedule.day
+        const fieldType = field.getType(); // Should be STRING for aggregated fields
         let value = null; // Default value
 
         // Log field being processed
@@ -1223,15 +1336,54 @@ function getData(request) {
            Logger.log('getData (Row %s): Processing field: %s (Type: %s)', results.indexOf(result), fieldName, fieldType);
         }
 
-        // Directly access the value from the processed (flattened) result
-        // as processDocument has already created keys matching the fieldName format (e.g., "airline.country")
-        value = processedResult[fieldName];
-
-        // Log the retrieved value
-        if (results.indexOf(result) < 3) { // Log first 3 rows
-           Logger.log('getData (Row %s): Raw value for [%s]: %s', results.indexOf(result), fieldName, JSON.stringify(value));
+        // --- Modification Start: Final Value Extraction Logic ---
+        // Determine the path relative to the dataObject
+        let relativePath = fieldName;
+        if (keyPrefix && fieldName.startsWith(keyPrefix)) {
+          relativePath = fieldName.substring(keyPrefix.length); // e.g., schedule.day or stops
+        } else if (keyPrefix && !fieldName.startsWith(keyPrefix)){
+          // This case shouldn't happen if schema/requests are consistent, but log a warning
+          Logger.log('getData (Row %s): WARNING - fieldName [%s] does not match result key prefix [%s]', results.indexOf(result), fieldName, keyPrefix);
+          // Attempt to use the full fieldName against the nested object anyway
+          relativePath = fieldName; 
         }
+
+        const relativeParts = relativePath.split('.');
+        const basePart = relativeParts[0]; // e.g., schedule or stops
+        const nestedPart = relativeParts.length > 1 ? relativeParts.slice(1).join('.') : null; // e.g., day or null
         
+        // Get the data corresponding to the base part *within* the dataObject
+        const sourceForCheck = dataObject ? dataObject[basePart] : undefined;
+
+        if (nestedPart && Array.isArray(sourceForCheck)) {
+            // CASE 1: Aggregated Array Field (e.g., schedule.day)
+            // Base part (schedule) points to an array in dataObject.
+            const aggregatedValues = sourceForCheck
+                .map(item => {
+                    // Extract the value using the nestedPart (day) from each item
+                    let itemValue = (item && typeof item === 'object') ? getNestedValue(item, nestedPart) : item; 
+                    return (itemValue === null || itemValue === undefined) ? '' : String(itemValue); // Ensure string conversion
+                })
+                .join(', '); // Join with comma separator
+            value = aggregatedValues;
+            if (results.indexOf(result) < 3) {
+                Logger.log('getData (Row %s): [Aggregated Array] Value for [%s]: %s', results.indexOf(result), fieldName, value);
+            }
+        } else {
+             // CASE 2: Simple Field or Nested Object Field (e.g., airline, address.city, stops)
+             // Use getNestedValue on the dataObject using the relativePath.
+             value = getNestedValue(dataObject, relativePath); 
+              if (results.indexOf(result) < 3) {
+                 // Log differently based on whether it was simple or truly nested
+                 if (relativePath.includes('.')) {
+                     Logger.log('getData (Row %s): [Nested Field] Value for [%s]: %s', results.indexOf(result), fieldName, value);
+                 } else {
+                     Logger.log('getData (Row %s): [Simple Field] Value for [%s]: %s', results.indexOf(result), fieldName, value);
+                 }
+             }
+        }
+        // --- Modification End ---
+
         // Process and push value based on schema type
         let formattedValue = null;
         if (value === null || value === undefined) {
@@ -1275,19 +1427,9 @@ function getData(request) {
           }
         }
 
-        // Log the formatted value before pushing
-        if (results.indexOf(result) < 3) {
-          Logger.log('getData (Row %s): Formatted value for [%s]: %s', results.indexOf(result), fieldName, JSON.stringify(formattedValue));
-        }
-        
         values.push(formattedValue); 
       });
       
-      // Log the final values array for the row
-      if (results.indexOf(result) < 3) { // Log first 3 rows
-        Logger.log('getData (Row %s): Final values array: %s', results.indexOf(result), JSON.stringify(values));
-      }
-
       rows.push({ values });
     });
     
