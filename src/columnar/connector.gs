@@ -566,12 +566,21 @@ function getRequestedFields(request) {
        let fieldTypeEnum;
        switch (fieldDefinition.dataType) {
          case 'NUMBER':
+           // Covers NUMBER, CURRENCY, PERCENT, DURATION (as seconds)
+           // Looker Studio applies formatting based on the type chosen in the UI.
            fieldTypeEnum = cc.FieldType.NUMBER;
            break;
          case 'BOOLEAN':
            fieldTypeEnum = cc.FieldType.BOOLEAN;
            break;
+         case 'URL':
+           fieldTypeEnum = cc.FieldType.URL;
+           break;
          case 'STRING': // Fallthrough for STRING and any other unhandled types
+         case 'TEXT': // Explicitly handle TEXT if getDataType returns it
+         case 'DATE': // Handle DATE if getDataType were to return it
+         case 'DATETIME': // Handle DATETIME if getDataType were to return it
+         case 'GEO': // Handle GEO if getDataType were to return it (currently maps to STRING)
          default:
            fieldTypeEnum = cc.FieldType.TEXT; // Default to TEXT
            break;
@@ -786,18 +795,20 @@ function getSchema(request) {
       if (value === null || value === undefined) {
         return 'STRING';
       } else if (type === 'number') {
-        return Number.isInteger(value) ? 'NUMBER' : 'NUMBER';
+        // Keep differentiating between integer and float? For now, just NUMBER.
+        return 'NUMBER'; // Looker Studio differentiates Number/Percent/Currency via formatting options.
       } else if (type === 'boolean') {
         return 'BOOLEAN';
       } else if (type === 'string') {
-        // Check if string is a date
-        const dateRegex = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?$/;
-        if (dateRegex.test(value)) {
-          return 'STRING'; // Using STRING for dates as DATE/TIME can be problematic
+        // Check for URL first
+        if (value.startsWith('http://') || value.startsWith('https://')) {
+          return 'URL';
+        } else {
+          // Keep other strings as STRING/DIMENSION (including potential dates)
+          return 'STRING';
         }
-        return 'STRING';
       } else {
-        return 'STRING'; // Default for objects and arrays
+        return 'STRING'; // Default for objects and arrays if they sneak through
       }
     }
     
@@ -948,9 +959,16 @@ function buildSchema(result) {
     } else if (typeof value === 'boolean') {
       potentialDataType = 'BOOLEAN';
       potentialSemantics = { conceptType: 'DIMENSION' };
-    } else if (value instanceof Date || (typeof value === 'string' && value.length > 10 && !isNaN(Date.parse(value)))) {
-      potentialDataType = 'YEAR_MONTH_DAY_HOUR';
-      potentialSemantics = { conceptType: 'DIMENSION', semanticGroup: 'DATETIME' };
+    } else if (typeof value === 'string') {
+      // Check for URL first
+      if (value.startsWith('http://') || value.startsWith('https://')) {
+        potentialDataType = 'URL';
+        potentialSemantics = { conceptType: 'DIMENSION' }; 
+      } else {
+        // Keep other strings as STRING/DIMENSION (including potential dates)
+        potentialDataType = 'STRING';
+        potentialSemantics = { conceptType: 'DIMENSION' };
+      }
     } else if (typeof value === 'object' && !Array.isArray(value)) {
        // Handle nested objects recursively
        for (const nestedKey in value) {
