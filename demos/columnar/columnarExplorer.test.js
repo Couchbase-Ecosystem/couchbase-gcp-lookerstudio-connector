@@ -252,32 +252,136 @@ async function listCollectionsLegacy(bucketName, scopeName) {
   }
 }
 
-// Function to get schema information for a collection
-async function getCollectionSchema(databaseName, scopeName, collectionName) {
-  console.log(`\n--- GETTING SCHEMA FOR: ${databaseName}.${scopeName}.${collectionName} ---`);
+// Function to get schema information for a collection by inference
+async function getCollectionSchemaByInference(databaseName, scopeName, collectionName) {
+  console.log(`\n--- INFERRING SCHEMA FOR: ${databaseName}.${scopeName}.${collectionName} ---`);
   try {
     // Try to get one row to infer schema
     const response = await executeQuery(`SELECT * FROM \`${databaseName}\`.\`${scopeName}\`.\`${collectionName}\` LIMIT 1`);
     
     if (response && response.results && response.results.length > 0) {
       const sampleRow = response.results[0];
-      console.log(`\nSchema fields for ${databaseName}.${scopeName}.${collectionName}:`);
+      console.log(`\nInferred schema fields for ${databaseName}.${scopeName}.${collectionName}:`);
       
-      const fields = Object.keys(sampleRow);
-      fields.sort().forEach((field, index) => {
+      const schema = {};
+      Object.keys(sampleRow).sort().forEach((field, index) => {
         const value = sampleRow[field];
         const type = value === null ? 'null' : typeof value;
         console.log(`[${index + 1}] ${field}: ${type}`);
+        schema[field] = type; // Store field and type
       });
       
-      return fields;
+      return schema;
     } else {
       console.log(`No data found in ${databaseName}.${scopeName}.${collectionName} to infer schema.`);
-      return [];
+      return null;
     }
   } catch (error) {
-    console.error('Error getting collection schema:', error.message);
-    return [];
+    console.error('Error inferring collection schema:', error.message);
+    return null;
+  }
+}
+
+// Function to get schema information for a collection from Metadata
+async function getCollectionSchemaFromMetadata(databaseName, scopeName, collectionName) {
+  console.log(`\n--- GETTING SCHEMA FROM METADATA FOR: ${databaseName}.${scopeName}.${collectionName} ---`);
+  try {
+    // Query System.Metadata to get schema information
+    const response = await executeQuery(`
+      SELECT FieldName, DataType
+      FROM System.Metadata.\`Dataset\` d
+      WHERE d.DatabaseName = "${databaseName}"
+        AND d.DataverseName = "${scopeName}"
+        AND d.DatasetName = "${collectionName}"
+    `);
+    
+    if (response && response.results && response.results.length > 0) {
+      const fields = response.results;
+      console.log(`\nSchema fields for ${databaseName}.${scopeName}.${collectionName}:`);
+      
+      if (fields.length > 0) {
+        // Return a schema object { fieldName: dataType } for comparison
+        const schema = {};
+        fields.forEach(field => {
+          schema[field.FieldName] = field.DataType;
+        });
+        return schema;
+      } else {
+        console.log(`Metadata found for ${databaseName}.${scopeName}.${collectionName}, but no Fields array present.`);
+        return null;
+      }
+    } else {
+      console.log(`No schema information found in System.Metadata for ${databaseName}.${scopeName}.${collectionName}.`);
+      // Optionally, you could fall back to the inference method here
+      return null;
+    }
+  } catch (error) {
+    console.error('Error getting collection schema from Metadata:', error.message);
+    // Optionally, you could fall back to the inference method here
+    return null;
+  }
+}
+
+// Function to compare schema results from inference and metadata
+async function compareSchemaMethods(databaseName, scopeName, collectionName) {
+  console.log(`\n--- COMPARING SCHEMA METHODS for ${databaseName}.${scopeName}.${collectionName} ---`);
+
+  const inferredSchema = await getCollectionSchemaByInference(databaseName, scopeName, collectionName);
+  const metadataSchema = await getCollectionSchemaFromMetadata(databaseName, scopeName, collectionName);
+
+  if (!inferredSchema && !metadataSchema) {
+    console.log('Both schema methods failed or returned no results.');
+    return;
+  }
+  if (!inferredSchema) {
+    console.log('Schema inference failed or returned no results.');
+    // Optionally display metadata schema here
+    return;
+  }
+  if (!metadataSchema) {
+    console.log('Schema retrieval from metadata failed or returned no results.');
+    // Optionally display inferred schema here
+    return;
+  }
+
+  const inferredFields = Object.keys(inferredSchema).sort();
+  const metadataFields = Object.keys(metadataSchema).sort();
+
+  console.log('\nComparison Results:');
+  let differences = false;
+
+  // Check fields present in inference but not metadata
+  const onlyInferred = inferredFields.filter(f => !metadataSchema.hasOwnProperty(f));
+  if (onlyInferred.length > 0) {
+    console.log('  Fields only in Inferred Schema:', onlyInferred.join(', '));
+    differences = true;
+  }
+
+  // Check fields present in metadata but not inference
+  const onlyMetadata = metadataFields.filter(f => !inferredSchema.hasOwnProperty(f));
+  if (onlyMetadata.length > 0) {
+    console.log('  Fields only in Metadata Schema:', onlyMetadata.join(', '));
+    differences = true;
+  }
+
+  // Compare types for common fields
+  const commonFields = inferredFields.filter(f => metadataSchema.hasOwnProperty(f));
+  for (const field of commonFields) {
+    const inferredType = inferredSchema[field];
+    // Note: Metadata types might be more specific (e.g., BIGINT vs number)
+    // Basic comparison for now
+    const metadataType = metadataSchema[field]; // Assuming direct type string
+    if (inferredType.toLowerCase() !== metadataType.toLowerCase()) {
+        // Simple type comparison - might need refinement (e.g., number vs INT, BIGINT)
+       if (!(inferredType === 'number' && ['int', 'bigint', 'double', 'float'].includes(metadataType.toLowerCase()))) {
+          console.log(`  Type mismatch for field '${field}': Inferred='${inferredType}', Metadata='${metadataType}'`);
+          differences = true;
+       }
+    }
+  }
+
+  if (!differences) {
+    console.log('  Schemas appear consistent (based on field names and basic type comparison).');
   }
 }
 
@@ -308,9 +412,12 @@ async function exploreDatabaseStructure() {
           // List collections in the travel-sample.inventory scope
           const collections = await listCollections(travelSampleDatabase, inventoryScope);
           
-          // Get schema for a sample collection
+          // Get schema for a sample collection and compare methods
           if (collections.length > 0) {
-            await getCollectionSchema(travelSampleDatabase, inventoryScope, collections[0]);
+            // Choose the first collection for comparison
+            const sampleCollection = collections[0]; 
+            await compareSchemaMethods(travelSampleDatabase, inventoryScope, sampleCollection);
+            // await getCollectionSchemaFromMetadata(travelSampleDatabase, inventoryScope, collections[0]); // Old call
           }
         }
       }
@@ -475,7 +582,9 @@ module.exports = {
   listDatabases,
   listScopes,
   listCollections,
-  getCollectionSchema,
+  getCollectionSchemaByInference,
+  getCollectionSchemaFromMetadata,
+  compareSchemaMethods,
   exploreDatabaseStructure,
   exploreTravelSample,
   runAnalysisQueries,

@@ -738,22 +738,98 @@ function getSchema(request) {
       throwUserError('Authentication credentials missing. Please reauthenticate.');
     }
     
-    // Check for provided schema fields
     const configParams = request.configParams || {};
+    
+    // Check for provided schema fields (takes highest priority)
     if (configParams.schemaFields && configParams.schemaFields.trim() !== '') {
       try {
         const schemaFields = JSON.parse(configParams.schemaFields);
         Logger.log('Using provided schema fields: %s', configParams.schemaFields);
         return { schema: schemaFields };
       } catch (e) {
-        Logger.log('Error parsing schema fields: %s', e.message);
-        // Continue to infer schema if provided schema is invalid
+        Logger.log('Error parsing schema fields: %s. Proceeding to query metadata/inference.', e.message);
       }
     }
     
-    // Helper function to process fields from an object
-    function processFields(obj, prefix = '') {
-      Logger.log('processFields: Processing object/value at prefix \'%s\'', prefix);
+    // --- Attempt 1: Query System.Metadata --- 
+    let schemaFromMetadata = null;
+    let canUseMetadata = configParams.collection && configParams.collection.trim() !== '' && 
+                         !configParams.query; // Only use metadata if collection selected and no custom query
+                        
+    if (canUseMetadata) {
+      const collectionParts = configParams.collection.split('.');
+      if (collectionParts.length === 3) {
+        const [dbName, dvName, dsName] = collectionParts;
+        Logger.log('Attempting schema retrieval from System.Metadata for %s.%s.%s', dbName, dvName, dsName);
+        
+        // Construct the API URL
+        const columnarUrl = constructApiUrl(path, 18095);
+        const apiUrl = columnarUrl + '/api/v1/request';
+        
+        const metadataQuery = `
+          SELECT Fields.FieldName, Fields.DataType 
+          FROM System.Metadata.\`Dataset\` d 
+          UNNEST d.Fields AS Fields 
+          WHERE d.DatabaseName = \"${dbName}\"\n            AND d.DataverseName = \"${dvName}\"\n            AND d.DatasetName = \"${dsName}\"\n          ORDER BY Fields.FieldName; \n        `; // Select from the UNNEST alias 'Fields'
+        
+        const payload = {
+          statement: metadataQuery,
+          timeout: '15s' // Shorter timeout for metadata query
+        };
+        
+        const options = {
+          method: 'post',
+          contentType: 'application/json',
+          headers: {
+            'Authorization': 'Basic ' + Utilities.base64Encode(username + ':' + password)
+          },
+          payload: JSON.stringify(payload),
+          muteHttpExceptions: true,
+          validateHttpsCertificates: false
+        };
+        
+        try {
+          const response = UrlFetchApp.fetch(apiUrl, options);
+          const responseCode = response.getResponseCode();
+          const responseBody = response.getContentText();
+
+          if (responseCode === 200) {
+            const parsedResponse = JSON.parse(responseBody);
+            if (parsedResponse.results && parsedResponse.results.length > 0) {
+              schemaFromMetadata = parsedResponse.results.map(field => ({
+                name: field.FieldName, 
+                label: field.FieldName, // Use FieldName for both
+                dataType: getDataType(null, field.DataType), // Map SQL type to Looker type
+                semantics: {
+                  conceptType: getConceptType(null, field.DataType) // Map SQL type to concept
+                }
+              }));
+              Logger.log('Successfully retrieved schema from System.Metadata: %s fields', schemaFromMetadata.length);
+            } else {
+              Logger.log('System.Metadata query successful but returned no fields for %s.%s.%s', dbName, dvName, dsName);
+            }
+          } else {
+            Logger.log('Failed to query System.Metadata (%s): %s', responseCode, responseBody);
+          }
+        } catch (e) {
+          Logger.log('Error querying System.Metadata: %s', e.toString());
+        }
+      } else {
+         Logger.log('Selected collection [%s] does not have the expected format bucket.scope.collection for metadata lookup.', configParams.collection);
+      }
+    }
+    
+    // If metadata successful, return it
+    if (schemaFromMetadata) {
+      return { schema: schemaFromMetadata };
+    }
+    
+    // --- Attempt 2: Fallback to Inference (LIMIT 1) --- 
+    Logger.log('Falling back to schema inference using LIMIT 1 query.');
+    
+    // Helper function to process fields from a single sample object (for inference)
+    function processFieldsForInference(obj, prefix = '') {
+      Logger.log('processFieldsForInference: Processing object/value at prefix \'%s\'', prefix);
       const fields = [];
       
       // Handle null objects
@@ -770,52 +846,36 @@ function getSchema(request) {
       
       // Process based on type
       if (Array.isArray(obj)) {
-        // --- Modification Start: Handle Arrays for Aggregation ---
+        // --- Array Handling for Inference (Keep aggregated string representation) ---
         if (obj.length > 0 && typeof obj[0] === 'object' && obj[0] !== null) {
-          // Array of Objects: Create aggregated string fields
-          const arrayPrefix = prefix ? `${prefix}` : 'array'; // e.g., 'route.schedule'
+          const arrayPrefix = prefix ? `${prefix}` : 'array'; 
           const allKeys = new Set();
-          
-          // Collect all unique keys from the *first* object (assuming consistent structure)
-          // A more robust approach might sample multiple objects
           Object.keys(obj[0]).forEach(key => allKeys.add(key));
-
-          Logger.log('processFields (Array of Objects): Found keys [%s] for prefix \'%s\'', Array.from(allKeys).join(', '), arrayPrefix);
-          
-          // Create one aggregated field per key
+          Logger.log('processFieldsForInference (Array of Objects): Found keys [%s] for prefix \'%s\'', Array.from(allKeys).join(', '), arrayPrefix);
           Array.from(allKeys).forEach(key => {
-            const fieldName = `${arrayPrefix}.${key}`; // e.g., route.schedule.day
+            const fieldName = `${arrayPrefix}.${key}`;
             fields.push({
               name: fieldName,
               label: fieldName,
-              dataType: 'STRING', // Always STRING for concatenated values
-              semantics: {
-                conceptType: 'DIMENSION' // Always DIMENSION 
-              }
+              dataType: 'STRING',
+              semantics: { conceptType: 'DIMENSION' }
             });
-             Logger.log('processFields (Array of Objects): Added aggregated field: %s', fieldName);
           });
-          
           return fields;
         } else if (obj.length > 0) {
-           // Array of Primitives: Create one aggregated string field
-           const fieldName = prefix || 'array'; // Use the prefix as the field name
+           const fieldName = prefix || 'array';
            fields.push({
              name: fieldName,
              label: fieldName,
              dataType: 'STRING', 
-             semantics: {
-               conceptType: 'DIMENSION'
-             }
+             semantics: { conceptType: 'DIMENSION' }
            });
-            Logger.log('processFields (Array of Primitives): Added aggregated field: %s', fieldName);
+           Logger.log('processFieldsForInference (Array of Primitives): Added aggregated field: %s', fieldName);
            return fields;
         } else {
-          // Empty array: Generate no fields (consistent with previous logic)
-          Logger.log('processFields: Skipping empty array at prefix \'%s\'', prefix || 'root');
+          Logger.log('processFieldsForInference: Skipping empty array at prefix \'%s\'', prefix || 'root');
           return []; 
         }
-        // --- Modification End ---
       } else if (typeof obj === 'object') {
         // Process each property in the object
         Object.keys(obj).forEach(key => {
@@ -827,103 +887,108 @@ function getSchema(request) {
               name: newPrefix,
               label: newPrefix,
               dataType: 'STRING',
-              semantics: {
-                conceptType: 'DIMENSION'
-              }
+              semantics: { conceptType: 'DIMENSION' }
             });
           } else if (typeof value === 'object') {
             // Recursively process nested objects and arrays
-            fields.push(...processFields(value, newPrefix));
+            fields.push(...processFieldsForInference(value, newPrefix));
           } else {
             // Add field for primitive values
+            const dataType = getDataType(value); // Use updated helper
             const fieldDef = {
               name: newPrefix,
               label: newPrefix,
-              dataType: getDataType(value),
+              dataType: dataType,
               semantics: {
-                conceptType: getConceptType(value, getDataType(value))
+                conceptType: getConceptType(value, dataType) // Use updated helper
               }
             };
-            Logger.log('processFields: Adding primitive field: %s', JSON.stringify(fieldDef));
+            Logger.log('processFieldsForInference: Adding primitive field: %s', JSON.stringify(fieldDef));
             fields.push(fieldDef);
           }
         });
-        
         return fields;
       } else {
         // Handle primitive value
+        const dataType = getDataType(obj); // Use updated helper
         const fieldDef = {
           name: prefix || 'value',
           label: prefix || 'Value',
-          dataType: getDataType(obj),
+          dataType: dataType,
           semantics: {
-            conceptType: getConceptType(obj, getDataType(obj))
+            conceptType: getConceptType(obj, dataType) // Use updated helper
           }
         };
-        Logger.log('processFields: Adding primitive field: %s', JSON.stringify(fieldDef));
+        Logger.log('processFieldsForInference: Adding primitive field: %s', JSON.stringify(fieldDef));
         return [fieldDef];
       }
     }
     
-    // Helper function to determine Data Studio data type
-    function getDataType(value) {
-      const type = typeof value;
-      
-      if (value === null || value === undefined) {
-        return 'STRING';
-      } else if (type === 'number') {
-        // Keep differentiating between integer and float? For now, just NUMBER.
-        return 'NUMBER'; // Looker Studio differentiates Number/Percent/Currency via formatting options.
-      } else if (type === 'boolean') {
-        return 'BOOLEAN';
-      } else if (type === 'string') {
-        // Check for URL first
-        if (value.startsWith('http://') || value.startsWith('https://')) {
-          return 'URL';
+    // Helper function to determine Data Studio data type (handles SQL types)
+    function getDataType(value, sqlDataType = null) {
+      if (sqlDataType) {
+        const upperSqlType = sqlDataType.toUpperCase();
+        // Map SQL types from Metadata
+        if (upperSqlType.includes('INT') || upperSqlType.includes('DECIMAL') || upperSqlType.includes('DOUBLE') || upperSqlType.includes('FLOAT') || upperSqlType.includes('REAL') || upperSqlType.includes('NUMERIC')) {
+          return 'NUMBER';
+        } else if (upperSqlType.includes('BOOL')) {
+          return 'BOOLEAN';
+        } else if (upperSqlType.includes('TIME') || upperSqlType.includes('DATE')) {
+          // Could map to specific Looker date/time types if needed, but STRING is safer for now
+          return 'STRING'; 
         } else {
-          // Keep other strings as STRING/DIMENSION (including potential dates)
-          return 'STRING';
+          return 'STRING'; // Default for VARCHAR, CHAR, TEXT, JSON, ARRAY, OBJECT etc.
         }
       } else {
-        return 'STRING'; // Default for objects and arrays if they sneak through
+        // Original inference logic based on JS type
+        const type = typeof value;
+        if (value === null || value === undefined) return 'STRING';
+        if (type === 'number') return 'NUMBER';
+        if (type === 'boolean') return 'BOOLEAN';
+        if (type === 'string') {
+          if (value.startsWith('http://') || value.startsWith('https://')) return 'URL';
+          return 'STRING';
+        }
+        return 'STRING'; // Default for objects/arrays in inference
       }
     }
     
-    // Helper function to determine concept type
-    function getConceptType(value, dataType) {
-      if (dataType === 'NUMBER') {
+    // Helper function to determine concept type (handles SQL types)
+    function getConceptType(value, lookerDataType, sqlDataType = null) {
+      // Determine based on the *final* Looker data type
+      if (lookerDataType === 'NUMBER') {
         return 'METRIC';
-      } else if (dataType === 'BOOLEAN') {
-        return 'DIMENSION';
       } else {
         return 'DIMENSION';
       }
     }
     
-    // Infer schema by running a sample query
+    // --- Inference Query Logic --- 
     let sampleQuery = '';
     
     if (configParams.query && configParams.query.trim() !== '') {
       // If a custom query is provided, add LIMIT 1 if not present
       sampleQuery = configParams.query.trim();
-      
       if (!sampleQuery.toLowerCase().includes('limit')) {
         sampleQuery += ' LIMIT 1';
       }
     } else if (configParams.collection && configParams.collection.trim() !== '') {
       // Construct query based on collection
       const collectionParts = configParams.collection.split('.');
-      
+      let collectionPath;
       if (collectionParts.length === 3) {
-        sampleQuery = `SELECT * FROM \`${collectionParts[0]}\`.\`${collectionParts[1]}\`.\`${collectionParts[2]}\` LIMIT 1`;
+        collectionPath = '`' + collectionParts[0] + '`.' + '`' + collectionParts[1] + '`.' + '`' + collectionParts[2] + '`';
       } else {
-        sampleQuery = `SELECT * FROM \`${configParams.collection}\` LIMIT 1`;
+        // Fallback for potentially incomplete path? Or error? For now, try direct name
+        Logger.log('Warning: Collection path [%s] might be incomplete. Trying direct query.', configParams.collection);
+        collectionPath = '`' + configParams.collection + '`'; 
       }
+      sampleQuery = `SELECT * FROM ${collectionPath} LIMIT 1`;
     } else {
-      throwUserError('Either collection or custom query must be specified to infer schema.');
+      throwUserError('Cannot infer schema: Neither collection nor custom query specified.');
     }
     
-    Logger.log('Schema detection query: %s', sampleQuery);
+    Logger.log('Schema inference query: %s', sampleQuery);
     
     // Construct the API URL
     const columnarUrl = constructApiUrl(path, 18095);
@@ -946,41 +1011,32 @@ function getSchema(request) {
       validateHttpsCertificates: false
     };
     
-    // Make the API request
+    // Make the API request for inference
     const response = UrlFetchApp.fetch(apiUrl, options);
     const responseCode = response.getResponseCode();
-    const responseBody = response.getContentText(); // Get body once
+    const responseBody = response.getContentText(); 
 
-    // Log raw response (truncated)
-    Logger.log('getSchema: Raw API response (code %s): %s...', responseCode, responseBody.substring(0, 500)); // Increased log length
+    Logger.log('getSchema (Inference): Raw API response (code %s): %s...', responseCode, responseBody.substring(0, 500));
     
     if (responseCode !== 200) {
-      const errorText = responseBody; // Use already fetched body
-      Logger.log('API error in getSchema: %s, Error: %s', responseCode, errorText);
-      throwUserError(`Couchbase API error (${responseCode}): ${errorText}`);
+      Logger.log('API error during schema inference: %s, Error: %s', responseCode, responseBody);
+      throwUserError(`Couchbase API error during schema inference (${responseCode}): ${responseBody}`);
     }
     
-    // Parse the response
+    // Parse the inference response
     const parsedResponse = JSON.parse(responseBody);
     let results = parsedResponse.results || [];
     
-    // Log parsed response structure (first result)
     if (results.length > 0) {
-      Logger.log('getSchema: Parsed response sample (first result): %s', JSON.stringify(results[0]));
-    } else {
-      Logger.log('getSchema: Parsed response contains no results.');
-    }
-
-    if (results.length > 0) {
-      // Use the first row to infer schema
-      const firstRow = processDocument(results[0]);
-      const fields = processFields(firstRow);
+      // Use the first row to infer schema using the dedicated helper
+      const firstRow = processDocument(results[0]); // processDocument flattens potential prefixes
+      const fields = processFieldsForInference(firstRow);
       
       Logger.log('getSchema: Final inferred schema: %s', JSON.stringify(fields));
       return { schema: fields };
     } else {
-      // No results returned, provide default schema
-      Logger.log('No results returned from sample query, returning default schema');
+      // No results returned from inference query
+      Logger.log('No results returned from inference query, returning default schema');
       return {
         schema: [
           {
@@ -998,133 +1054,6 @@ function getSchema(request) {
     Logger.log('Error in getSchema: %s', e.message);
     throwUserError(`Error inferring schema: ${e.message}`);
   }
-}
-
-/**
- * Builds schema from the query results.
- */
-function buildSchema(result) {
-  if (!result?.results?.length) {
-    const status = result?.status || 'unknown';
-    const errors = result?.errors ? JSON.stringify(result.errors) : 'No details provided.';
-    Logger.log('buildSchema failed: Query returned status %s with errors: %s', status, errors);
-    throw new Error('Query returned no results or failed. Cannot build schema. Status: ' + status + ', Errors: ' + errors);
-  }
-  
-  Logger.log(JSON.stringify(result.results.slice(0, 10), null, 2)); 
-  
-  const schema = [];
-  // Helper function defined inside buildSchema to access the schema array easily
-  function addFieldToSchema(key, value, parentKey = '') {
-    const fieldName = parentKey ? parentKey + '.' + key : key;
-    
-    // --- Determine potential type from current value --- 
-    let potentialDataType = 'STRING'; // Default to STRING
-    let potentialSemantics = { conceptType: 'DIMENSION' };
-
-    // Check specific types first
-    if (value === null || value === undefined) {
-        // If the first time we see a field it's null, assume STRING for flexibility
-        potentialDataType = 'STRING'; 
-        potentialSemantics = { conceptType: 'DIMENSION' };
-    } else if (typeof value === 'number') {
-      potentialDataType = 'NUMBER';
-      potentialSemantics = { conceptType: 'METRIC', isReaggregatable: true };
-    } else if (typeof value === 'boolean') {
-      potentialDataType = 'BOOLEAN';
-      potentialSemantics = { conceptType: 'DIMENSION' };
-    } else if (typeof value === 'string') {
-      // Check for URL first
-      if (value.startsWith('http://') || value.startsWith('https://')) {
-        potentialDataType = 'URL';
-        potentialSemantics = { conceptType: 'DIMENSION' }; 
-      } else {
-        // Keep other strings as STRING/DIMENSION (including potential dates)
-        potentialDataType = 'STRING';
-        potentialSemantics = { conceptType: 'DIMENSION' };
-      }
-    } else if (typeof value === 'object' && !Array.isArray(value)) {
-       // Handle nested objects recursively
-       for (const nestedKey in value) {
-         addFieldToSchema(nestedKey, value[nestedKey], fieldName);
-       }
-       return; // Stop processing this level for nested objects
-    } else if (Array.isArray(value)){
-        // Skip arrays
-        return;
-    } // Otherwise, it remains STRING/DIMENSION
-    
-    // --- Check against existing schema entry --- 
-    const existingFieldIndex = schema.findIndex(field => field.name === fieldName);
-
-    if (existingFieldIndex === -1) {
-      // Field doesn't exist, add it
-      schema.push({
-        name: fieldName,
-        label: fieldName, 
-        dataType: potentialDataType,
-        semantics: potentialSemantics
-      });
-      Logger.log('buildSchema: Added field [%s] with type [%s]', fieldName, potentialDataType);
-    } else {
-      // Field exists, check for type merge/update
-      const existingField = schema[existingFieldIndex];
-      const currentDataType = existingField.dataType;
-
-      if (currentDataType !== potentialDataType) {
-        // Types differ, apply merging rules
-        let mergedDataType = currentDataType;
-        let needsUpdate = false;
-
-        // If either is STRING, the result is STRING
-        if (potentialDataType === 'STRING') {
-            mergedDataType = 'STRING';
-            needsUpdate = true;
-        } else if (currentDataType !== 'STRING') {
-             // If current isn't STRING and potential isn't STRING, but they differ 
-             // (e.g., NUMBER vs BOOLEAN, NUMBER vs DATE), default to STRING for safety.
-             mergedDataType = 'STRING'; 
-             needsUpdate = true;
-        } // If current is already STRING, mergedDataType remains STRING, no update needed based on this rule.
-        
-        if (needsUpdate && existingField.dataType !== mergedDataType) {
-          Logger.log('buildSchema: Updating field [%s] type from [%s] to [%s] due to merge.', 
-                    fieldName, existingField.dataType, mergedDataType);
-          existingField.dataType = mergedDataType;
-          // When merging to STRING, reset semantics to basic DIMENSION
-          existingField.semantics = { conceptType: 'DIMENSION' }; 
-        }
-      }
-    }
-  }
-  
-  Logger.log('buildSchema: Iterating through %s documents to build merged schema...', result.results.length);
-
-  // Iterate through ALL documents in the sample to build the schema
-  result.results.forEach((row, index) => {
-    let dataObject = row;
-    const keys = Object.keys(row);
-    
-    // Check if data is nested under a single key (common pattern)
-    if (keys.length === 1 && typeof row[keys[0]] === 'object' && row[keys[0]] !== null) {
-      dataObject = row[keys[0]];
-      // Logger.log('buildSchema (Doc %s): Data is nested under key: %s', index, keys[0]); // Optional log
-    } else {
-      // Logger.log('buildSchema (Doc %s): Data is at the top level.', index); // Optional log
-    }
-
-    // Process all top-level fields in the current dataObject
-    for (const key in dataObject) {
-      addFieldToSchema(key, dataObject[key]);
-    }
-  });
-
-  if (schema.length === 0) {
-    throw new Error('Could not determine any fields from the first row of results. Check query and data structure.');
-  }
-  
-  Logger.log('buildSchema successful. Detected %s fields: %s', schema.length, schema.map(f => f.name).join(', '));
-  return schema;
 }
 
 /**
