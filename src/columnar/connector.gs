@@ -750,123 +750,92 @@ function getSchema(request) {
         // Continue to infer schema if provided schema is invalid
       }
     }
-    
-    // Helper function to process fields from an object
-    function processFields(obj, prefix = '') {
-      Logger.log('processFields: Processing object/value at prefix \'%s\'', prefix);
-      const fields = [];
-      
-      // Handle null objects
-      if (obj === null || obj === undefined) {
-        return [{
-          name: prefix || 'value',
-          label: prefix || 'Value',
-          dataType: 'STRING',
-          semantics: {
-            conceptType: 'DIMENSION'
-          }
-        }];
-      }
-      
-      // Process based on type
-      if (Array.isArray(obj)) {
-        // --- Modification Start: Handle Arrays for Aggregation ---
-        if (obj.length > 0 && typeof obj[0] === 'object' && obj[0] !== null) {
-          // Array of Objects: Create aggregated string fields
-          const arrayPrefix = prefix ? `${prefix}` : 'array'; // e.g., 'route.schedule'
-          const allKeys = new Set();
-          
-          // Collect all unique keys from the *first* object (assuming consistent structure)
-          // A more robust approach might sample multiple objects
-          Object.keys(obj[0]).forEach(key => allKeys.add(key));
 
-          Logger.log('processFields (Array of Objects): Found keys [%s] for prefix \'%s\'', Array.from(allKeys).join(', '), arrayPrefix);
-          
-          // Create one aggregated field per key
-          Array.from(allKeys).forEach(key => {
-            const fieldName = `${arrayPrefix}.${key}`; // e.g., route.schedule.day
-            fields.push({
-              name: fieldName,
-              label: fieldName,
-              dataType: 'STRING', // Always STRING for concatenated values
-              semantics: {
-                conceptType: 'DIMENSION' // Always DIMENSION 
-              }
-            });
-             Logger.log('processFields (Array of Objects): Added aggregated field: %s', fieldName);
-          });
-          
-          return fields;
-        } else if (obj.length > 0) {
-           // Array of Primitives: Create one aggregated string field
-           const fieldName = prefix || 'array'; // Use the prefix as the field name
+    // --- New Schema Processing Logic using array_infer_schema output ---
+
+    // Helper function to map Couchbase inferred types to Looker Studio types
+    function mapInferredTypeToLookerType(inferredType) {
+      // Handle array of types (mixed types) - default to STRING for simplicity
+      if (Array.isArray(inferredType)) {
+        if (inferredType.includes('string')) return 'STRING';
+        if (inferredType.includes('number')) return 'NUMBER'; // Could refine if needed
+        if (inferredType.includes('boolean')) return 'BOOLEAN';
+        return 'STRING'; // Default fallback for mixed or unknown arrays
+      }
+
+      // Handle single types
+      switch (inferredType) {
+        case 'number':
+          return 'NUMBER';
+        case 'boolean':
+          return 'BOOLEAN';
+        case 'string':
+          return 'STRING'; // Could add URL detection here if needed based on samples
+        case 'object':
+        case 'array':
+        case 'null':
+        default:
+          return 'STRING'; // Treat objects, arrays, nulls, and unknowns as STRING
+      }
+    }
+
+    // Helper function to determine concept type based on Looker Studio type
+    function getConceptTypeFromLookerType(lookerType) {
+      return lookerType === 'NUMBER' ? 'METRIC' : 'DIMENSION';
+    }
+
+    // Recursive function to process inferred schema properties
+    function processInferredProperties(properties, prefix = '') {
+      const fields = [];
+      if (!properties || typeof properties !== 'object') {
+        return fields;
+      }
+
+      Object.keys(properties).forEach(key => {
+        const fieldInfo = properties[key];
+        const fieldName = prefix ? `${prefix}.${key}` : key;
+
+        if (fieldInfo.type === 'object' && fieldInfo.properties) {
+          // Recursively process nested objects
+          fields.push(...processInferredProperties(fieldInfo.properties, fieldName));
+        } else if (fieldInfo.type === 'array') {
+           // --- Handle Arrays ---
+           // Option 1: Represent the whole array as a single STRING field (simpler)
            fields.push({
              name: fieldName,
              label: fieldName,
-             dataType: 'STRING', 
-             semantics: {
-               conceptType: 'DIMENSION'
-             }
+             dataType: 'STRING', // Represent array content as a string
+             semantics: { conceptType: 'DIMENSION' }
            });
-            Logger.log('processFields (Array of Primitives): Added aggregated field: %s', fieldName);
-           return fields;
+           Logger.log('processInferredProperties: Added field for array (as STRING): %s', fieldName);
+
+           // Option 2: If array contains objects, try to infer sub-fields (more complex)
+           // This requires looking at 'items' if array_infer_schema provides it,
+           // or potentially running another inference on array elements.
+           // For now, sticking to Option 1.
+
         } else {
-          // Empty array: Generate no fields (consistent with previous logic)
-          Logger.log('processFields: Skipping empty array at prefix \'%s\'', prefix || 'root');
-          return []; 
+          // Handle primitive types (string, number, boolean, null, or mixed)
+          const lookerType = mapInferredTypeToLookerType(fieldInfo.type);
+          const conceptType = getConceptTypeFromLookerType(lookerType);
+
+          fields.push({
+            name: fieldName,
+            label: fieldName,
+            dataType: lookerType,
+            semantics: { conceptType: conceptType }
+          });
+          Logger.log('processInferredProperties: Added field: %s (Type: %s)', fieldName, lookerType);
         }
-        // --- Modification End ---
-      } else if (typeof obj === 'object') {
-        // Process each property in the object
-        Object.keys(obj).forEach(key => {
-          const value = obj[key];
-          const newPrefix = prefix ? `${prefix}.${key}` : key;
-          
-          if (value === null || value === undefined) {
-            fields.push({
-              name: newPrefix,
-              label: newPrefix,
-              dataType: 'STRING',
-              semantics: {
-                conceptType: 'DIMENSION'
-              }
-            });
-          } else if (typeof value === 'object') {
-            // Recursively process nested objects and arrays
-            fields.push(...processFields(value, newPrefix));
-          } else {
-            // Add field for primitive values
-            const fieldDef = {
-              name: newPrefix,
-              label: newPrefix,
-              dataType: getDataType(value),
-              semantics: {
-                conceptType: getConceptType(value, getDataType(value))
-              }
-            };
-            Logger.log('processFields: Adding primitive field: %s', JSON.stringify(fieldDef));
-            fields.push(fieldDef);
-          }
-        });
-        
-        return fields;
-      } else {
-        // Handle primitive value
-        const fieldDef = {
-          name: prefix || 'value',
-          label: prefix || 'Value',
-          dataType: getDataType(obj),
-          semantics: {
-            conceptType: getConceptType(obj, getDataType(obj))
-          }
-        };
-        Logger.log('processFields: Adding primitive field: %s', JSON.stringify(fieldDef));
-        return [fieldDef];
-      }
+      });
+      return fields;
     }
-    
-    // Helper function to determine Data Studio data type
-    function getDataType(value) {
+
+    // --- End of New Schema Processing Logic ---
+
+
+    // Helper function to determine Data Studio data type (kept for reference, but new logic preferred)
+    function getDataType_Legacy(value) {
       const type = typeof value;
       
       if (value === null || value === undefined) {
@@ -899,40 +868,46 @@ function getSchema(request) {
         return 'DIMENSION';
       }
     }
-    
-    // Infer schema by running a sample query
-    let sampleQuery = '';
-    
-    if (configParams.query && configParams.query.trim() !== '') {
-      // If a custom query is provided, add LIMIT 1 if not present
-      sampleQuery = configParams.query.trim();
-      
-      if (!sampleQuery.toLowerCase().includes('limit')) {
-        sampleQuery += ' LIMIT 1';
-      }
-    } else if (configParams.collection && configParams.collection.trim() !== '') {
-      // Construct query based on collection
+
+    // --- Construct the array_infer_schema query ---
+    let inferSchemaQuery = '';
+    let targetCollectionPath = ''; // To store the properly escaped path
+
+    if (configParams.collection && configParams.collection.trim() !== '') {
       const collectionParts = configParams.collection.split('.');
-      
       if (collectionParts.length === 3) {
-        sampleQuery = `SELECT * FROM \`${collectionParts[0]}\`.\`${collectionParts[1]}\`.\`${collectionParts[2]}\` LIMIT 1`;
+        // Escape each part: bucket.scope.collection
+        targetCollectionPath = `\`${collectionParts[0]}\`.\`${collectionParts[1]}\`.\`${collectionParts[2]}\``;
+        // Construct the inference query
+        inferSchemaQuery = `SELECT array_infer_schema((SELECT VALUE t FROM ${targetCollectionPath} AS t LIMIT 1000)) AS inferred_schema;`; // Limit subquery for performance
       } else {
-        sampleQuery = `SELECT * FROM \`${configParams.collection}\` LIMIT 1`;
+        throwUserError('Invalid collection path specified. Use format: bucket.scope.collection');
       }
+    } else if (configParams.query && configParams.query.trim() !== '') {
+       // If a custom query is provided, try to infer schema from its results
+       // Note: This is less reliable than inferring directly from the collection
+       // We wrap the user's query in the array_infer_schema call.
+       // We need to remove any trailing semicolon from the user's query first.
+       let userQuery = configParams.query.trim().replace(/;$/, '');
+       // Add a LIMIT if not present to avoid inferring from too much data
+       if (!userQuery.toLowerCase().includes('limit')) {
+         userQuery += ' LIMIT 1000'; // Add a reasonable limit
+       }
+       inferSchemaQuery = `SELECT array_infer_schema((${userQuery})) AS inferred_schema;`;
+       Logger.log('getSchema: Inferring schema from custom query results.');
     } else {
       throwUserError('Either collection or custom query must be specified to infer schema.');
     }
-    
-    Logger.log('Schema detection query: %s', sampleQuery);
-    
+
+    Logger.log('Schema inference query: %s', inferSchemaQuery);
     // Construct the API URL
     const columnarUrl = constructApiUrl(path, 18095);
     const apiUrl = columnarUrl + '/api/v1/request';
-    
-    // Setup the API request
+
+    // Setup the API request for schema inference
     const payload = {
-      statement: sampleQuery,
-      timeout: '30s'
+      statement: inferSchemaQuery,
+      timeout: '60s' // Allow more time for inference
     };
     
     const options = {
@@ -945,57 +920,67 @@ function getSchema(request) {
       muteHttpExceptions: true,
       validateHttpsCertificates: false
     };
-    
+
     // Make the API request
     const response = UrlFetchApp.fetch(apiUrl, options);
     const responseCode = response.getResponseCode();
-    const responseBody = response.getContentText(); // Get body once
+    const responseBody = response.getContentText();
 
-    // Log raw response (truncated)
-    Logger.log('getSchema: Raw API response (code %s): %s...', responseCode, responseBody.substring(0, 500)); // Increased log length
-    
+    // Log raw response
+    Logger.log('getSchema: Raw API response (code %s): %s', responseCode, responseBody);
+
     if (responseCode !== 200) {
-      const errorText = responseBody; // Use already fetched body
-      Logger.log('API error in getSchema: %s, Error: %s', responseCode, errorText);
-      throwUserError(`Couchbase API error (${responseCode}): ${errorText}`);
-    }
-    
-    // Parse the response
-    const parsedResponse = JSON.parse(responseBody);
-    let results = parsedResponse.results || [];
-    
-    // Log parsed response structure (first result)
-    if (results.length > 0) {
-      Logger.log('getSchema: Parsed response sample (first result): %s', JSON.stringify(results[0]));
-    } else {
-      Logger.log('getSchema: Parsed response contains no results.');
+      Logger.log('API error in getSchema: %s, Error: %s', responseCode, responseBody);
+      throwUserError(`Couchbase API error during schema inference (${responseCode}): ${responseBody}`);
     }
 
-    if (results.length > 0) {
-      // Use the first row to infer schema
-      const firstRow = processDocument(results[0]);
-      const fields = processFields(firstRow);
-      
-      Logger.log('getSchema: Final inferred schema: %s', JSON.stringify(fields));
-      return { schema: fields };
-    } else {
-      // No results returned, provide default schema
-      Logger.log('No results returned from sample query, returning default schema');
-      return {
-        schema: [
-          {
-            name: configParams.collection || 'value',
-            label: configParams.collection || 'Value',
-            dataType: 'STRING',
-            semantics: {
-              conceptType: 'DIMENSION'
-            }
-          }
-        ]
-      };
+    // Parse the response
+    let parsedResponse;
+    try {
+      parsedResponse = JSON.parse(responseBody);
+    } catch (e) {
+       Logger.log('Error parsing schema inference response: %s', e.message);
+       throwUserError('Invalid response from Couchbase API during schema inference: ' + e.message);
     }
+
+    // Extract the inferred schema
+    if (!parsedResponse.results || parsedResponse.results.length === 0 || !parsedResponse.results[0].inferred_schema) {
+      Logger.log('Schema inference query did not return the expected structure. Response: %s', responseBody);
+      // Fallback or error - maybe try the old method or return a default?
+      // For now, throw an error. Could potentially fall back to SELECT * LIMIT 1 here.
+      throwUserError('Schema inference failed: Could not find inferred_schema in the response.');
+    }
+
+    // The result is an array, usually with one element for the overall schema.
+    const inferredSchemaArray = parsedResponse.results[0].inferred_schema;
+    if (!Array.isArray(inferredSchemaArray) || inferredSchemaArray.length === 0) {
+       Logger.log('Inferred schema array is empty or not an array.');
+       throwUserError('Schema inference failed: Invalid inferred_schema structure.');
+    }
+
+    // Assuming the first element contains the schema for the collection/query.
+    const schemaDefinition = inferredSchemaArray[0];
+
+    if (!schemaDefinition || schemaDefinition.type !== 'object' || !schemaDefinition.properties) {
+       Logger.log('Inferred schema does not contain a valid top-level object with properties.');
+       throwUserError('Schema inference failed: Could not find properties in the inferred schema.');
+    }
+
+    // Process the properties object to generate Looker Studio fields
+    const fields = processInferredProperties(schemaDefinition.properties);
+
+    if (fields.length === 0) {
+       Logger.log('Warning: Schema inference resulted in zero fields. Check collection/query and data.');
+       // Provide a minimal default schema to avoid breaking Looker Studio
+       return { schema: [{ name: 'empty_result', label: 'Empty Result', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}] };
+    }
+
+    Logger.log('getSchema: Final inferred schema: %s', JSON.stringify(fields));
+    return { schema: fields };
+
   } catch (e) {
     Logger.log('Error in getSchema: %s', e.message);
+    Logger.log('getSchema Error Stack: %s', e.stack); // Log stack trace
     throwUserError(`Error inferring schema: ${e.message}`);
   }
 }
