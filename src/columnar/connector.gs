@@ -794,13 +794,13 @@ function getSchema(request) {
       Object.keys(properties).forEach(key => {
         const fieldInfo = properties[key];
         const fieldName = prefix ? `${prefix}.${key}` : key;
+        const lowerFieldName = fieldName.toLowerCase(); // For case-insensitive matching
 
         if (fieldInfo.type === 'object' && fieldInfo.properties) {
           // Recursively process nested objects
           fields.push(...processInferredProperties(fieldInfo.properties, fieldName));
         } else if (fieldInfo.type === 'array') {
-           // --- Handle Arrays ---
-           // Option 1: Represent the whole array as a single STRING field (simpler)
+           // Represent the whole array as a single STRING field
            fields.push({
              name: fieldName,
              label: fieldName,
@@ -808,24 +808,63 @@ function getSchema(request) {
              semantics: { conceptType: 'DIMENSION' }
            });
            Logger.log('processInferredProperties: Added field for array (as STRING): %s', fieldName);
-
-           // Option 2: If array contains objects, try to infer sub-fields (more complex)
-           // This requires looking at 'items' if array_infer_schema provides it,
-           // or potentially running another inference on array elements.
-           // For now, sticking to Option 1.
-
         } else {
           // Handle primitive types (string, number, boolean, null, or mixed)
-          const lookerType = mapInferredTypeToLookerType(fieldInfo.type);
-          const conceptType = getConceptTypeFromLookerType(lookerType);
+          let lookerType = mapInferredTypeToLookerType(fieldInfo.type);
+          let conceptType = getConceptTypeFromLookerType(lookerType);
+          let isReaggregatable = false; // Default
+
+          // --- Heuristic Type Refinement based on Field Name ---
+          // This section attempts to refine the basic types inferred from the database
+          // into more specific Looker Studio types based on common naming conventions.
+          // This is not foolproof and may require manual adjustment in Looker Studio.
+          if (lookerType === 'NUMBER') {
+            conceptType = 'METRIC'; // Default concept for numbers
+            isReaggregatable = true; // Assume numbers are reaggregatable unless known otherwise
+            if (lowerFieldName.includes('percent') || lowerFieldName.includes('rate') || lowerFieldName.includes('%')) {
+              lookerType = 'PERCENT';
+              Logger.log('Refined type for [%s] to PERCENT based on name.', fieldName);
+            } else if (lowerFieldName.includes('duration') || lowerFieldName.includes('_sec') || lowerFieldName.endsWith('seconds')) {
+              lookerType = 'DURATION';
+               Logger.log('Refined type for [%s] to DURATION based on name.', fieldName);
+            } else if (lowerFieldName.includes('amount') || lowerFieldName.includes('price') || lowerFieldName.includes('cost') || lowerFieldName.includes('revenue') || lowerFieldName.includes('salary') || lowerFieldName.includes('currency') || lowerFieldName.includes('$') || lowerFieldName.includes('€') || lowerFieldName.includes('£') || lowerFieldName.includes('¥')) {
+              lookerType = 'CURRENCY';
+              Logger.log('Refined type for [%s] to CURRENCY based on name.', fieldName);
+            }
+            // Note: Other numbers remain 'NUMBER'
+          } else if (lookerType === 'STRING') {
+            conceptType = 'DIMENSION'; // Default concept for strings
+             if (lowerFieldName.includes('date') || lowerFieldName.includes('time') || lowerFieldName.includes('timestamp') || lowerFieldName.match(/_dt$|_ts$/) || lowerFieldName.startsWith('dt_') || lowerFieldName.startsWith('ts_') ) {
+                // Use DATETIME as it's more general. Looker can format it.
+                lookerType = 'DATETIME';
+                Logger.log('Refined type for [%s] to DATETIME based on name.', fieldName);
+            } else if (lowerFieldName.includes('country') || lowerFieldName.includes('city') || lowerFieldName.includes('region') || lowerFieldName.includes('state') || lowerFieldName.includes('zip') || lowerFieldName.includes('postal') || lowerFieldName.includes('latitude') || lowerFieldName.includes('longitude') || lowerFieldName.includes('lat') || lowerFieldName.includes('lon') || lowerFieldName.match(/_geo$|_location$/)) {
+              lookerType = 'GEO';
+              Logger.log('Refined type for [%s] to GEO based on name.', fieldName);
+            } else if (lowerFieldName.includes('url') || lowerFieldName.includes('link') || lowerFieldName.includes('website') || lowerFieldName.startsWith('http')) {
+              lookerType = 'URL';
+               Logger.log('Refined type for [%s] to URL based on name.', fieldName);
+            }
+            // Note: Hyperlink, Image, Image Link types are typically created via Looker Studio functions
+            // (HYPERLINK, IMAGE) and are difficult to infer reliably from raw data.
+          } else if (lookerType === 'BOOLEAN') {
+              conceptType = 'DIMENSION';
+          }
+          // --- End of Heuristic Refinement ---
+
+
+          const semantics = { conceptType: conceptType };
+          if (conceptType === 'METRIC') {
+            semantics.isReaggregatable = isReaggregatable;
+          }
 
           fields.push({
             name: fieldName,
-            label: fieldName,
+            label: fieldName, // Use field name as label initially
             dataType: lookerType,
-            semantics: { conceptType: conceptType }
+            semantics: semantics
           });
-          Logger.log('processInferredProperties: Added field: %s (Type: %s)', fieldName, lookerType);
+          Logger.log('processInferredProperties: Added field: %s (Type: %s, Concept: %s)', fieldName, lookerType, conceptType);
         }
       });
       return fields;
