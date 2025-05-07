@@ -3,6 +3,116 @@
  * This connector allows users to connect to a Couchbase database and run Columnar queries.
  */
 
+/**
+ * Constructs a full API URL from a user-provided path, ensuring HTTPS
+ * and adding a default port if none is specified, *including* for Capella URLs.
+ * 
+ * @param {string} path The user-provided server path
+ * @param {number} defaultPort The default port to use if none is specified
+ * @return {string} The fully constructed API URL
+ */
+function constructApiUrl(path, defaultPort) {
+  let hostAndPort = path;
+  const isCapella = path.includes('cloud.couchbase.com');
+
+  // Standardize scheme and strip it
+  if (hostAndPort.startsWith('couchbases://')) {
+    hostAndPort = hostAndPort.substring('couchbases://'.length);
+  } else if (hostAndPort.startsWith('couchbase://')) {
+    hostAndPort = hostAndPort.substring('couchbase://'.length);
+  } else if (hostAndPort.startsWith('https://')) {
+     hostAndPort = hostAndPort.substring('https://'.length);
+  } else if (hostAndPort.startsWith('http://')) {
+     hostAndPort = hostAndPort.substring('http://'.length);
+  }
+
+  // Remove trailing slash if present
+  hostAndPort = hostAndPort.replace(/\/$/, '');
+
+  // Check if port is already present (handles IPv4 and IPv6)
+  const hasPort = /:\d+$|]:\d+$/.test(hostAndPort);
+
+  // Add default port regardless of whether it's Capella
+  if (!hasPort && defaultPort) {
+    hostAndPort += ':' + defaultPort;
+    if (isCapella) {
+      Logger.log('constructApiUrl: Added port %s for Capella URL: %s', defaultPort, hostAndPort);
+    } else {
+      Logger.log('constructApiUrl: Added default port %s for URL: %s', defaultPort, hostAndPort);
+    }
+  } else if (hasPort) {
+    Logger.log('constructApiUrl: Port already present in URL: %s', hostAndPort);
+  }
+
+  return 'https://' + hostAndPort;
+}
+
+/**
+ * Helper function to make API requests to Couchbase Columnar Service.
+ * Centralizes request logic to reduce code duplication.
+ * 
+ * @param {string} path The Couchbase server path
+ * @param {string} username The username for authentication
+ * @param {string} password The password for authentication
+ * @param {string} statement The SQL++ statement to execute
+ * @param {string} timeout Optional timeout value (defaults to '10s')
+ * @return {Object} The parsed response from the API
+ */
+function executeColumnarQuery(path, username, password, statement, timeout = '10s') {
+  const columnarUrl = constructApiUrl(path, 18095);
+  const queryUrl = columnarUrl + '/api/v1/request';
+  
+  Logger.log('executeColumnarQuery: URL: %s, Statement: %s', queryUrl, statement);
+  
+  const payload = {
+    statement: statement,
+    timeout: timeout
+  };
+  
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {
+      Authorization: 'Basic ' + Utilities.base64Encode(username + ':' + password)
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+    validateHttpsCertificates: false
+  };
+  
+  try {
+    Logger.log('executeColumnarQuery: Sending request...');
+    const response = UrlFetchApp.fetch(queryUrl, options);
+    const responseCode = response.getResponseCode();
+    const responseText = response.getContentText();
+    
+    Logger.log('executeColumnarQuery: Response code: %s', responseCode);
+    
+    if (responseCode !== 200) {
+      Logger.log('executeColumnarQuery: Error response: %s', responseText);
+      return { 
+        error: true, 
+        code: responseCode, 
+        message: responseText 
+      };
+    }
+    
+    return { 
+      error: false, 
+      code: responseCode, 
+      data: JSON.parse(responseText) 
+    };
+  } catch (e) {
+    Logger.log('executeColumnarQuery: Exception: %s', e.toString());
+    Logger.log('executeColumnarQuery: Stack: %s', e.stack);
+    return { 
+      error: true, 
+      code: 500, 
+      message: e.toString() 
+    };
+  }
+}
+
 // ==========================================================================
 // ===                       AUTHENTICATION FLOW                          ===
 // ==========================================================================
@@ -32,46 +142,17 @@ function validateCredentials(path, username, password) {
     return false; 
   }
 
-  // Use constructApiUrl for consistent URL handling
-  const columnarUrl = constructApiUrl(path, 18095);
-  const queryUrl = columnarUrl + '/api/v1/request';
-  Logger.log('validateCredentials constructed Columnar queryUrl: %s', queryUrl);
-
-  const queryPayload = {
-    statement: 'SELECT 1 AS test;',
-    timeout: '5s'
-  };
-
-  const options = {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(queryPayload),
-    headers: {
-      Authorization: 'Basic ' + Utilities.base64Encode(username + ':' + password)
-    },
-    muteHttpExceptions: true, 
-    validateHttpsCertificates: false 
-  };
-
-  try {
-    Logger.log('Sending validation request...');
-    const response = UrlFetchApp.fetch(queryUrl, options);
-    const responseCode = response.getResponseCode();
-    const responseText = response.getContentText(); 
-    Logger.log('Validation response code: %s', responseCode);
-
-    if (responseCode === 200) {
-      Logger.log('Credential validation successful.');
-      return true;
-    } else {
-      Logger.log('Credential validation failed. Code: %s, Response: %s', responseCode, responseText);
-      return false;
-    }
-  } catch (e) {
-    Logger.log('Credential validation failed with exception: %s', e.toString());
-    Logger.log('Exception details: %s', e.stack); 
+  // Execute a simple query to test authentication
+  const testQuery = 'SELECT 1 AS test;';
+  const response = executeColumnarQuery(path, username, password, testQuery, '5s');
+  
+  if (response.error) {
+    Logger.log('Credential validation failed. Code: %s, Response: %s', response.code, response.message);
     return false;
   }
+  
+  Logger.log('Credential validation successful.');
+  return true;
 }
 
 /**
@@ -191,24 +272,17 @@ function fetchCouchbaseMetadata() {
   const scopesCollections = {};
   
   try {
-    // First check if System.Metadata is accessible
+    // Check if System.Metadata is accessible
     Logger.log('fetchCouchbaseMetadata: Checking if System.Metadata is accessible');
-    const metadataCheckPayload = {
-      statement: "SELECT COUNT(*) as count FROM System.Metadata.`Dataset` LIMIT 1",
-      timeout: "10000ms"
-    };
-    
-    options.payload = JSON.stringify(metadataCheckPayload);
+    const metadataCheckQuery = "SELECT COUNT(*) as count FROM System.Metadata.`Dataset` LIMIT 1";
     
     let hasSystemMetadata = false;
     try {
-      const metadataCheckResponse = UrlFetchApp.fetch(queryUrl, options);
-      if (metadataCheckResponse.getResponseCode() === 200) {
-        const metadataCheckData = JSON.parse(metadataCheckResponse.getContentText());
-        if (metadataCheckData.results && metadataCheckData.results.length > 0) {
-          hasSystemMetadata = true;
-          Logger.log('fetchCouchbaseMetadata: System.Metadata is accessible');
-        }
+      const metadataResponse = executeColumnarQuery(path, username, password, metadataCheckQuery, "10s");
+      if (!metadataResponse.error && metadataResponse.data && 
+          metadataResponse.data.results && metadataResponse.data.results.length > 0) {
+        hasSystemMetadata = true;
+        Logger.log('fetchCouchbaseMetadata: System.Metadata is accessible');
       }
     } catch (e) {
       Logger.log('fetchCouchbaseMetadata: Error checking System.Metadata access: %s', e.toString());
@@ -530,6 +604,120 @@ function validateConfig(configParams) {
 }
 
 // ==========================================================================
+// ===                          SCHEMA CACHING                             ===
+// ==========================================================================
+
+/**
+ * Caches a schema for a specific collection or query.
+ * This reduces redundant schema inference calls and improves performance.
+ * 
+ * @param {string} cacheKey The unique key for the schema (collection path or query hash)
+ * @param {Array} schema The schema to cache
+ */
+function cacheSchema(cacheKey, schema) {
+  if (!cacheKey || !schema) {
+    Logger.log('cacheSchema: Invalid inputs, not caching.');
+    return;
+  }
+  
+  try {
+    const userProperties = PropertiesService.getUserProperties();
+    const schemaCache = userProperties.getProperty('dscc.schemaCache') || '{}';
+    let schemaCacheObj = JSON.parse(schemaCache);
+    
+    // Add timestamp for cache invalidation strategies
+    schemaCacheObj[cacheKey] = {
+      schema: schema,
+      timestamp: new Date().getTime()
+    };
+    
+    // Limit cache size by keeping only the 10 most recent schemas
+    const cacheKeys = Object.keys(schemaCacheObj).sort((a, b) => {
+      return schemaCacheObj[b].timestamp - schemaCacheObj[a].timestamp;
+    });
+    
+    if (cacheKeys.length > 10) {
+      // Remove oldest entries
+      cacheKeys.slice(10).forEach(key => {
+        delete schemaCacheObj[key];
+      });
+    }
+    
+    userProperties.setProperty('dscc.schemaCache', JSON.stringify(schemaCacheObj));
+    Logger.log('cacheSchema: Cached schema for key: %s', cacheKey);
+  } catch (e) {
+    Logger.log('cacheSchema: Error caching schema: %s', e.toString());
+  }
+}
+
+/**
+ * Retrieves a cached schema for a specific collection or query.
+ * 
+ * @param {string} cacheKey The unique key for the schema (collection path or query hash)
+ * @return {Array|null} The cached schema or null if not found
+ */
+function getCachedSchema(cacheKey) {
+  if (!cacheKey) {
+    return null;
+  }
+  
+  try {
+    const userProperties = PropertiesService.getUserProperties();
+    const schemaCache = userProperties.getProperty('dscc.schemaCache') || '{}';
+    const schemaCacheObj = JSON.parse(schemaCache);
+    
+    if (schemaCacheObj[cacheKey]) {
+      const cachedItem = schemaCacheObj[cacheKey];
+      
+      // Check if cache is fresh (less than 1 hour old)
+      const now = new Date().getTime();
+      const cacheAge = now - cachedItem.timestamp;
+      const HOUR_IN_MS = 60 * 60 * 1000;
+      
+      if (cacheAge < HOUR_IN_MS) {
+        Logger.log('getCachedSchema: Found fresh cache for key: %s', cacheKey);
+        return cachedItem.schema;
+      } else {
+        Logger.log('getCachedSchema: Found stale cache for key: %s (age: %s ms)', cacheKey, cacheAge);
+        return null;
+      }
+    }
+    
+    Logger.log('getCachedSchema: No cache found for key: %s', cacheKey);
+    return null;
+  } catch (e) {
+    Logger.log('getCachedSchema: Error retrieving cached schema: %s', e.toString());
+    return null;
+  }
+}
+
+/**
+ * Generates a cache key for a collection or query.
+ * 
+ * @param {Object} configParams The configuration parameters
+ * @return {string} The cache key
+ */
+function generateSchemaCacheKey(configParams) {
+  if (configParams.collection && configParams.collection.trim() !== '') {
+    // For collections, use the collection path as the key
+    return 'collection:' + configParams.collection.trim();
+  } else if (configParams.query && configParams.query.trim() !== '') {
+    // For queries, use a hash of the query as the key
+    // Simple string hash function
+    const query = configParams.query.trim();
+    let hash = 0;
+    for (let i = 0; i < query.length; i++) {
+      const char = query.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32bit integer
+    }
+    return 'query:' + hash;
+  }
+  
+  return null;
+}
+
+// ==========================================================================
 // ===                        SCHEMA & DATA FLOW                          ===
 // ==========================================================================
 
@@ -616,29 +804,29 @@ function getRequestedFields(request) {
 
 /**
  * Processes the result document and fixes field names for Columnar response format.
+ * More efficient implementation with better handling of deep nesting.
  * 
  * @param {Object} document The document from query results
+ * @param {number} maxDepth Maximum nesting depth to prevent stack overflow (default: 5)
  * @return {Object} Document with correctly formatted field names
  */
-function processDocument(document) {
-  // Check if the document is a result with a document prefix 
-  // (e.g., airline: { id: "123", name: "Air France" })
-  Logger.log('processDocument: Input document: %s', JSON.stringify(document));
-  
-  // Add check for non-object input
+function processDocument(document, maxDepth = 5) {
+  // Early validation
   if (typeof document !== 'object' || document === null) {
-     Logger.log('processDocument: Input is not a valid object, returning empty object.');
-     return {}; // Return an empty object to avoid errors downstream
+    Logger.log('processDocument: Input is not a valid object, returning empty object.');
+    return {}; 
   }
 
-  const keys = Object.keys(document);
+  Logger.log('processDocument: Input document: %s', JSON.stringify(document));
   
-  // If there's only one top-level key and its value is an object, it might be a document prefix
+  // Check for document prefix pattern (e.g., airline: { id: "123", name: "Air France" })
+  const keys = Object.keys(document);
   if (keys.length === 1 && typeof document[keys[0]] === 'object' && document[keys[0]] !== null) {
     const prefix = keys[0];
     const nestedObj = document[keys[0]];
-    const result = {};
     
+    // For simple prefix case, use iterative approach instead of recursion
+    const result = {};
     // Create fields with the format prefix.field (e.g., airline.id)
     Object.keys(nestedObj).forEach(key => {
       result[`${prefix}.${key}`] = nestedObj[key];
@@ -648,72 +836,72 @@ function processDocument(document) {
     return result;
   }
   
-  // For documents without prefix, we still need to process arrays properly
+  // For more complex cases, use iteration with a queue to avoid recursion
   const result = {};
+  const queue = [];
   
-  // Helper function to flatten arrays and nested objects
-  function flattenObject(obj, parentKey = '') {
-    if (typeof obj !== 'object' || obj === null) {
-      return { [parentKey]: obj };
-    }
-    
-    let flattened = {};
-    
-    if (Array.isArray(obj)) {
-      // For arrays of objects, generate fields for each key in each item
-      if (obj.length > 0 && typeof obj[0] === 'object' && obj[0] !== null) {
-        // Find all possible keys in the array objects
-        const allKeys = new Set();
-        obj.forEach(item => {
-          if (item && typeof item === 'object') {
-            Object.keys(item).forEach(key => allKeys.add(key));
-          }
-        });
-        
-        // Create a flattened field for each key in each item
-        Array.from(allKeys).forEach(key => {
-          obj.forEach((item, index) => {
-            if (item && typeof item === 'object' && key in item) {
-              const flatKey = `${parentKey}[${index}].${key}`;
-              flattened[flatKey] = item[key];
-            }
-          });
-        });
-      } else {
-        // For arrays of primitives
-        obj.forEach((item, index) => {
-          flattened[`${parentKey}[${index}]`] = item;
-        });
-      }
-    } else {
-      // For regular objects
-      Object.keys(obj).forEach(key => {
-        const newKey = parentKey ? `${parentKey}.${key}` : key;
-        
-        if (typeof obj[key] === 'object' && obj[key] !== null) {
-          // Recursively flatten nested objects/arrays
-          Object.assign(flattened, flattenObject(obj[key], newKey));
-        } else {
-          flattened[newKey] = obj[key];
-        }
-      });
-    }
-    
-    return flattened;
-  }
-  
-  // Flatten the top-level properties
+  // Initialize the queue with top-level properties
   Object.keys(document).forEach(key => {
-    if (typeof document[key] === 'object' && document[key] !== null) {
-      // For objects and arrays, use the flattening helper
-      Object.assign(result, flattenObject(document[key], key));
-    } else {
-      // For primitives, just copy the value
-      result[key] = document[key];
-    }
+    queue.push({
+      value: document[key],
+      path: key,
+      depth: 0
+    });
   });
   
-  Logger.log('processDocument: Final flattened document: %s', JSON.stringify(result));
+  // Process the queue
+  while (queue.length > 0) {
+    const { value, path, depth } = queue.shift();
+    
+    // Skip if we've reached max depth
+    if (depth >= maxDepth) {
+      result[path] = typeof value === 'object' ? JSON.stringify(value) : value;
+      continue;
+    }
+    
+    // Handle based on value type
+    if (value === null || value === undefined) {
+      result[path] = null;
+    } else if (Array.isArray(value)) {
+      // For arrays, only go one level deep for simplicity and performance
+      if (value.length === 0) {
+        result[path] = [];
+      } else if (typeof value[0] === 'object' && value[0] !== null && depth < maxDepth - 1) {
+        // For arrays of objects, extract important fields from each item
+        value.forEach((item, index) => {
+          if (item && typeof item === 'object') {
+            Object.keys(item).forEach(key => {
+              const newPath = `${path}[${index}].${key}`;
+              result[newPath] = item[key];
+            });
+          } else {
+            result[`${path}[${index}]`] = item;
+          }
+        });
+      } else {
+        // For arrays of primitives or at max depth, stringify
+        result[path] = value.join(', ');
+      }
+    } else if (typeof value === 'object') {
+      // For objects, add its properties to the queue
+      Object.keys(value).forEach(key => {
+        queue.push({
+          value: value[key],
+          path: `${path}.${key}`,
+          depth: depth + 1
+        });
+      });
+    } else {
+      // For primitives, just assign the value
+      result[path] = value;
+    }
+  }
+  
+  Logger.log('processDocument: Final flattened document (keys: %s): %s', 
+             Object.keys(result).length, 
+             Object.keys(result).length > 20 ? 
+               JSON.stringify(Object.keys(result)) : 
+               JSON.stringify(result));
   return result;
 }
 
@@ -750,6 +938,17 @@ function getSchema(request) {
         // Continue to infer schema if provided schema is invalid
       }
     }
+
+    // Check for cached schema before inferring
+    const cacheKey = generateSchemaCacheKey(configParams);
+    const cachedSchema = getCachedSchema(cacheKey);
+    
+    if (cachedSchema) {
+      Logger.log('getSchema: Using cached schema for: %s', cacheKey);
+      return { schema: cachedSchema };
+    }
+    
+    Logger.log('getSchema: No valid cache found, inferring schema...');
 
     // --- New Schema Processing Logic using array_infer_schema output ---
 
@@ -976,6 +1175,12 @@ function getSchema(request) {
     }
 
     Logger.log('getSchema: Final inferred schema: %s', JSON.stringify(fields));
+    
+    // Cache the inferred schema for future use
+    if (cacheKey) {
+      cacheSchema(cacheKey, fields);
+    }
+    
     return { schema: fields };
 
   } catch (e) {
@@ -1257,18 +1462,22 @@ function getData(request) {
     
     // Helper function to get nested values by path including arrays
     function getNestedValue(obj, path) {
-      // Handle array notation like "schedule[0].day"
-      const parts = path.replace(/\[(\d+)\]/g, '.$1').split('.');
-      let current = obj;
+      if (!obj || !path) return null;
       
+      // Convert array notation [n] to .n for easier splitting
+      const normalizedPath = path.replace(/\[(\d+)\]/g, '.$1');
+      const parts = normalizedPath.split('.');
+      
+      // Iterative solution to prevent stack overflow on deeply nested objects
+      let current = obj;
       for (let i = 0; i < parts.length; i++) {
         if (current === null || current === undefined) {
           return null;
         }
         
-        // Handle array index when the key is a number
         const key = parts[i];
-        if (!isNaN(key) && Array.isArray(current)) {
+        // Handle numeric keys for arrays
+        if (Array.isArray(current) && !isNaN(key)) {
           const index = parseInt(key, 10);
           current = index < current.length ? current[index] : null;
         } else {
@@ -1488,46 +1697,6 @@ function processResults(response, requestedFields) {
 // ==========================================================================
 // ===                            UTILITIES                               ===
 // ==========================================================================
-
-/**
- * Constructs a full API URL from a user-provided path, ensuring HTTPS
- * and adding a default port if none is specified, *including* for Capella URLs.
- */
-function constructApiUrl(path, defaultPort) {
-  let hostAndPort = path;
-  const isCapella = path.includes('cloud.couchbase.com');
-
-  // Standardize scheme and strip it
-  if (hostAndPort.startsWith('couchbases://')) {
-    hostAndPort = hostAndPort.substring('couchbases://'.length);
-  } else if (hostAndPort.startsWith('couchbase://')) {
-    hostAndPort = hostAndPort.substring('couchbase://'.length);
-  } else if (hostAndPort.startsWith('https://')) {
-     hostAndPort = hostAndPort.substring('https://'.length);
-  } else if (hostAndPort.startsWith('http://')) {
-     hostAndPort = hostAndPort.substring('http://'.length);
-  }
-
-  // Remove trailing slash if present
-  hostAndPort = hostAndPort.replace(/\/$/, '');
-
-  // Check if port is already present (handles IPv4 and IPv6)
-  const hasPort = /:\d+$|]:\d+$/.test(hostAndPort);
-
-  // Add default port regardless of whether it's Capella
-  if (!hasPort && defaultPort) {
-    hostAndPort += ':' + defaultPort;
-    if (isCapella) {
-      Logger.log('constructApiUrl: Added port %s for Capella URL: %s', defaultPort, hostAndPort);
-    } else {
-      Logger.log('constructApiUrl: Added default port %s for URL: %s', defaultPort, hostAndPort);
-    }
-  } else if (hasPort) {
-    Logger.log('constructApiUrl: Port already present in URL: %s', hostAndPort);
-  }
-
-  return 'https://' + hostAndPort;
-}
 
 /**
  * Helper function to get schema fields based on the request object.
