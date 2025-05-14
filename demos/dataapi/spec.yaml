@@ -1,0 +1,1208 @@
+openapi: "3.0.0"
+info:
+  version: 1.0.0
+  title: Couchbase Data API
+paths:
+  '/v1/callerIdentity':
+    parameters:
+      - $ref: '#/components/parameters/AuthorizationHeader'
+    get:
+      operationId: getCallerIdentity
+      tags:
+        - Tools
+      responses:
+        '200':
+          description: Successfully fetched the current callers identity.
+          content:
+            'application/json':
+              schema:
+                type: object
+                properties:
+                  user:
+                    type: string
+                    description: The user that is making the request.
+                    example: Administrator
+        '403':
+          $ref: '#/components/responses/Forbidden' 
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  '/v1/buckets/{bucketName}/scopes/{scopeName}/collections/{collectionName}/documents/{documentKey}':
+    parameters:
+      - $ref: '#/components/parameters/AuthorizationHeader'
+      - $ref: '#/components/parameters/BucketName'
+      - $ref: '#/components/parameters/ScopeName'
+      - $ref: '#/components/parameters/CollectionName'
+      - $ref: '#/components/parameters/DocumentKey'
+    get:
+      operationId: getDocument
+      tags:
+        - Single Document Operations
+      parameters:
+        - $ref: '#/components/parameters/AcceptEncodingHeader'
+        - in: query
+          name: project
+          description: Specific fields to project from the document.
+          required: false
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        '200':
+          description: Successful fetch of the document
+          headers:
+            Content-Encoding:
+              $ref: "#/components/headers/ContentEncoding"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Expires:
+              $ref: "#/components/headers/Expires"
+            X-CB-Flags:
+              $ref: "#/components/headers/DocumentFlags"
+          content:
+            'application/json':
+              schema:
+                type: object
+                description: The contents of the document.
+                example: {
+                  "title": "Brighton",
+                  "name": "Brighton Palace Pier",
+                  "alt": null,
+                  "address": "Madeira Dr, Brighton BN2 1TW",
+                  "directions": null,
+                  "phone": "01273609361",
+                  "tollfree": null,
+                  "email": "info@brightonpalacepier.co.uk",
+                  "url": "https://www.brightonpier.co.uk",
+                  "hours": "11am–6pm",
+                  "image": null,
+                  "price": "£2",
+                  "content": "The Brighton Palace Pier, commonly known as Brighton Pier or the Palace Pier, is a Grade II listed pleasure pier in Brighton, England, located in the city centre opposite the Old Steine. 
+                               Established in 1899, it was the third pier to be constructed in Brighton after the Royal Suspension Chain Pier and the West Pier, but is now the only one still in operation.",
+                  "geo": {
+                    "lat": 50.815,
+                    "lon": -0.136944,
+                    "accuracy": "RANGE_INTERPOLATED"
+                  },
+                  "activity": "do",
+                  "type": "landmark",
+                  "id": 10044,
+                  "country": "United Kingdom",
+                  "city": "Brighton",
+                  "state": null
+                }
+            'text/plain':
+              example: "Here is the text that was contained in the specified document."
+              schema:
+                type: string
+                description: The text contained within the document.
+                example: Here is the contents of your document
+            'application/octet-stream':
+              example: |- 
+                01001000011001010111001001100101001000000110100101110011 
+                00100000011101000110100001100101001000000110001001101001 
+                01101110011000010111001001111001001000000110001101101111 
+                01101110011101000110010101101110011101000111001100100000 
+                01101111011001100010000001110100011010000110010100100000 
+                01110011011100000110010101100011011010010110011001101001 
+                01100101011001000010000001100100011011110110001101110101 
+                0110110101100101011011100111010000101110
+              schema:
+                type: string
+                format: binary
+                description: The binary contents of the document.
+            '*':
+              schema:
+                type: string
+                format: binary
+                description: The contents of the document.
+        '400':
+          $ref: '#/components/responses/BadRequest' 
+        '403':
+          $ref: '#/components/responses/Forbidden' 
+        '404':
+          $ref: '#/components/responses/NotFound' 
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable' 
+        '504':
+          $ref: '#/components/responses/GatewayTimeout' 
+    post:
+      operationId: createDocument
+      tags:
+        - Single Document Operations
+      parameters:
+        - $ref: '#/components/parameters/ContentEncodingHeader'
+        - $ref: '#/components/parameters/ExpiresHeader'
+        - $ref: '#/components/parameters/DocumentFlagsHeader'
+        - $ref: '#/components/parameters/DurabilityLevelHeader'
+      requestBody:
+        required: true
+        content:
+         '*':
+            schema:
+              type: string
+              format: binary
+              description: The contents of the document.
+      responses:
+        '200':
+          description: Successful creation of the document
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-CB-MutationToken:
+              $ref: "#/components/headers/MutationToken"
+        '400':
+          $ref: '#/components/responses/BadRequest' 
+        '403':
+          $ref: '#/components/responses/Forbidden' 
+        '404':
+          $ref: '#/components/responses/NotFound' 
+        '409':
+          $ref: '#/components/responses/Conflict' 
+        '413':
+          $ref: '#/components/responses/ContentTooLarge' 
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable' 
+        '504':
+          $ref: '#/components/responses/GatewayTimeout' 
+    put:
+      operationId: updateDocument
+      tags:
+        - Single Document Operations
+      parameters:
+        - $ref: '#/components/parameters/ContentEncodingHeader'
+        - $ref: '#/components/parameters/IfMatchHeader'
+        - $ref: '#/components/parameters/ExpiresHeader'
+        - $ref: '#/components/parameters/DocumentFlagsHeader'
+        - $ref: '#/components/parameters/DurabilityLevelHeader'
+      requestBody:
+        required: true
+        content:
+          '*':
+            schema:
+              type: string
+              format: binary
+              description: The contents of the document.
+      responses:
+        '200':
+          description: Successful creation of the document
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-CB-MutationToken:
+              $ref: "#/components/headers/MutationToken"
+        '400':
+          $ref: '#/components/responses/BadRequest' 
+        '403':
+          $ref: '#/components/responses/Forbidden' 
+        '404':
+          $ref: '#/components/responses/NotFound' 
+        '409':
+          $ref: '#/components/responses/Conflict' 
+        '413':
+          $ref: '#/components/responses/ContentTooLarge' 
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable' 
+        '504':
+          $ref: '#/components/responses/GatewayTimeout' 
+    delete:
+      operationId: deleteDocument
+      tags:
+        - Single Document Operations
+      parameters:
+        - $ref: '#/components/parameters/IfMatchHeader'
+        - $ref: '#/components/parameters/DurabilityLevelHeader'
+      responses:
+        '200':
+          description: Successful deletion of the document
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-CB-MutationToken:
+              $ref: "#/components/headers/MutationToken"
+        '400':
+          $ref: '#/components/responses/BadRequest' 
+        '403':
+          $ref: '#/components/responses/Forbidden' 
+        '404':
+          $ref: '#/components/responses/NotFound' 
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable' 
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  '/v1.alpha/enabled':
+    get:
+      operationId: alphaEnabled
+      tags:
+        - Tools
+      responses:
+        '200':
+          description: The alpha API is enabled
+        '404':
+          description: The alpha API is not enabled
+  '/v1.alpha/buckets/{bucketName}/scopes/{scopeName}/collections/{collectionName}/documents/{documentKey}/append':
+    parameters:
+      - $ref: '#/components/parameters/AuthorizationHeader'
+      - $ref: '#/components/parameters/BucketName'
+      - $ref: '#/components/parameters/ScopeName'
+      - $ref: '#/components/parameters/CollectionName'
+      - $ref: '#/components/parameters/DocumentKey'
+    post:
+      operationId: appendToDocument
+      tags:
+        - Binary Operations
+      parameters:
+        - $ref: '#/components/parameters/IfMatchHeader'
+        - $ref: '#/components/parameters/DurabilityLevelHeader'
+      requestBody:
+        required: true
+        content:
+         '*':
+            schema: {}
+      responses:
+        '200':
+          description: Successfully appended contents to the document.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-CB-MutationToken:
+              $ref: "#/components/headers/MutationToken"
+        '400':
+          $ref: '#/components/responses/BadRequest' 
+        '403':
+          $ref: '#/components/responses/Forbidden' 
+        '404':
+          $ref: '#/components/responses/NotFound' 
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable' 
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  '/v1.alpha/buckets/{bucketName}/scopes/{scopeName}/collections/{collectionName}/documents/{documentKey}/prepend':
+    parameters:
+      - $ref: '#/components/parameters/AuthorizationHeader'
+      - $ref: '#/components/parameters/BucketName'
+      - $ref: '#/components/parameters/ScopeName'
+      - $ref: '#/components/parameters/CollectionName'
+      - $ref: '#/components/parameters/DocumentKey'
+    post:
+      operationId: prependToDocument
+      tags:
+        - Binary Operations
+      parameters:
+        - $ref: '#/components/parameters/IfMatchHeader'
+        - $ref: '#/components/parameters/DurabilityLevelHeader'
+      requestBody:
+        required: true
+        content:
+         '*':
+            schema: {}
+      responses:
+        '200':
+          description: Successfully prepended contents to the document.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-CB-MutationToken:
+              $ref: "#/components/headers/MutationToken"
+        '400':
+          $ref: '#/components/responses/BadRequest' 
+        '403':
+          $ref: '#/components/responses/Forbidden' 
+        '404':
+          $ref: '#/components/responses/NotFound' 
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable' 
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  '/v1.alpha/buckets/{bucketName}/scopes/{scopeName}/collections/{collectionName}/documents/{documentKey}/increment':
+    parameters:
+      - $ref: '#/components/parameters/AuthorizationHeader'
+      - $ref: '#/components/parameters/BucketName'
+      - $ref: '#/components/parameters/ScopeName'
+      - $ref: '#/components/parameters/CollectionName'
+      - $ref: '#/components/parameters/DocumentKey'
+    post:
+      operationId: incrementDocument
+      tags:
+        - Binary Operations
+      parameters:
+        - $ref: '#/components/parameters/ExpiresHeader'
+        - $ref: '#/components/parameters/DurabilityLevelHeader'
+      requestBody:
+        content:
+          'application/json':
+            schema:
+              type: object
+              properties:
+                initial:
+                  description: The value to set the document to if the document does not exist.
+                  type: integer
+                  format: uint64
+                  example: 10
+                delta:
+                  description: The value to increment the document by if it exists.
+                  type: integer
+                  format: uint64
+                  example: 1
+          '*':
+            schema: {}
+      responses:
+        '200':
+          description: Successfully incremented the document.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-CB-MutationToken:
+              $ref: "#/components/headers/MutationToken"
+          content:
+            application/json:
+              schema:
+                type: integer
+                format: uint64
+                example: 10
+                description: The number stored in the document after incrementing/initializing.
+        '400':
+          $ref: '#/components/responses/BadRequest' 
+        '403':
+          $ref: '#/components/responses/Forbidden' 
+        '404':
+          $ref: '#/components/responses/NotFound' 
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable' 
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  '/v1.alpha/buckets/{bucketName}/scopes/{scopeName}/collections/{collectionName}/documents/{documentKey}/decrement':
+    parameters:
+      - $ref: '#/components/parameters/AuthorizationHeader'
+      - $ref: '#/components/parameters/BucketName'
+      - $ref: '#/components/parameters/ScopeName'
+      - $ref: '#/components/parameters/CollectionName'
+      - $ref: '#/components/parameters/DocumentKey'
+    post:
+      operationId: decrementDocument
+      tags:
+        - Binary Operations
+      parameters:
+        - $ref: '#/components/parameters/ExpiresHeader'
+        - $ref: '#/components/parameters/DurabilityLevelHeader'
+      requestBody:
+        content:
+          'application/json':
+            schema:
+              type: object
+              properties:
+                initial:
+                  type: integer
+                  format: uint64
+                  description: The value to set the document to if the document does not exist.
+                  example: 10
+                delta:
+                  type: integer
+                  format: uint64
+                  description: The value to decrement the document by if it exists.
+                  example: 1
+          '*':
+            schema: {}
+      responses:
+        '200':
+          description: Successfully incremented the document.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-CB-MutationToken:
+              $ref: "#/components/headers/MutationToken"
+          content:
+            application/json:
+              schema:
+                type: integer
+                format: uint64
+                example: 11
+                description: The number stored in the document after decrementing/initializing.
+        '400':
+          $ref: '#/components/responses/BadRequest' 
+        '403':
+          $ref: '#/components/responses/Forbidden' 
+        '404':
+          $ref: '#/components/responses/NotFound' 
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable' 
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  '/v1.alpha/buckets/{bucketName}/scopes/{scopeName}/collections/{collectionName}/documents/{documentKey}/lock':
+    parameters:
+      - $ref: '#/components/parameters/AuthorizationHeader'
+      - $ref: '#/components/parameters/BucketName'
+      - $ref: '#/components/parameters/ScopeName'
+      - $ref: '#/components/parameters/CollectionName'
+      - $ref: '#/components/parameters/DocumentKey'
+    post:
+      operationId: lockDocument
+      tags:
+        - Locking Operations
+      parameters:
+        - $ref: '#/components/parameters/AcceptEncodingHeader'
+      requestBody:
+        required: true
+        content:
+          'application/json':
+            schema:
+              type: object
+              properties:
+                lockTime:
+                  description: The maximum period of time the document should remain locked.
+                  type: integer
+                  format: uint32
+                  example: 10
+      responses:
+        '200':
+          description: Successfully locked the document
+          headers:
+            Content-Encoding:
+              $ref: "#/components/headers/ContentEncoding"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-CB-Flags:
+              $ref: "#/components/headers/DocumentFlags"
+          content:
+            'application/json':
+              schema:
+                type: object
+                description: The contents of the document.
+                example: {
+                  "title": "Brighton",
+                  "name": "Brighton Palace Pier",
+                  "alt": null,
+                  "address": "Madeira Dr, Brighton BN2 1TW",
+                  "directions": null,
+                  "phone": "01273609361",
+                  "tollfree": null,
+                  "email": "info@brightonpalacepier.co.uk",
+                  "url": "https://www.brightonpier.co.uk",
+                  "hours": "11am–6pm",
+                  "image": null,
+                  "price": "£2",
+                  "content": "The Brighton Palace Pier, commonly known as Brighton Pier or the Palace Pier, is a Grade II listed pleasure pier in Brighton, England, located in the city centre opposite the Old Steine. 
+                               Established in 1899, it was the third pier to be constructed in Brighton after the Royal Suspension Chain Pier and the West Pier, but is now the only one still in operation.",
+                  "geo": {
+                    "lat": 50.815,
+                    "lon": -0.136944,
+                    "accuracy": "RANGE_INTERPOLATED"
+                  },
+                  "activity": "do",
+                  "type": "landmark",
+                  "id": 10044,
+                  "country": "United Kingdom",
+                  "city": "Brighton",
+                  "state": null
+                }
+            'text/plain':
+              example: "Here is the text that was contained in the specified document."
+              schema:
+                type: string
+                description: The text contained within the document.
+                example: Here is the contents of your document
+            'application/octet-stream':
+              example: |-
+                01001000011001010111001001100101001000000110100101110011 
+                00100000011101000110100001100101001000000110001001101001 
+                01101110011000010111001001111001001000000110001101101111 
+                01101110011101000110010101101110011101000111001100100000 
+                01101111011001100010000001110100011010000110010100100000 
+                01110011011100000110010101100011011010010110011001101001 
+                01100101011001000010000001100100011011110110001101110101 
+                0110110101100101011011100111010000101110
+              schema:
+                type: string
+                format: binary
+                description: The binary contents of the document.
+            '*':
+              schema:
+                type: string
+                format: binary
+                description: The contents of the document.
+        '400':
+          $ref: '#/components/responses/BadRequest' 
+        '403':
+          $ref: '#/components/responses/Forbidden' 
+        '404':
+          $ref: '#/components/responses/NotFound' 
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable' 
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  '/v1.alpha/buckets/{bucketName}/scopes/{scopeName}/collections/{collectionName}/documents/{documentKey}/unlock':
+    parameters:
+      - $ref: '#/components/parameters/AuthorizationHeader'
+      - $ref: '#/components/parameters/BucketName'
+      - $ref: '#/components/parameters/ScopeName'
+      - $ref: '#/components/parameters/CollectionName'
+      - $ref: '#/components/parameters/DocumentKey'
+    post:
+      operationId: unlockDocument
+      tags:
+        - Locking Operations
+      parameters:
+        - $ref: '#/components/parameters/IfMatchHeader'
+      responses:
+        '200':
+          description: Successfully unlocked the document.
+          headers:
+            X-CB-MutationToken:
+              $ref: "#/components/headers/MutationToken"
+        '400':
+          $ref: '#/components/responses/BadRequest' 
+        '403':
+          $ref: '#/components/responses/Forbidden' 
+        '404':
+          $ref: '#/components/responses/NotFound' 
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable' 
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  '/v1.alpha/buckets/{bucketName}/scopes/{scopeName}/collections/{collectionName}/documents/{documentKey}/touch':
+    parameters:
+      - $ref: '#/components/parameters/AuthorizationHeader'
+      - $ref: '#/components/parameters/BucketName'
+      - $ref: '#/components/parameters/ScopeName'
+      - $ref: '#/components/parameters/CollectionName'
+      - $ref: '#/components/parameters/DocumentKey'
+    post:
+      operationId: touchDocument
+      tags:
+        - Expiry Operations
+      parameters:
+        - $ref: '#/components/parameters/AcceptEncodingHeader'
+      requestBody:
+        required: true
+        content:
+          'application/json':
+            schema:
+              type: object
+              properties:
+                expiry:
+                  description: The new expiry to set for the document, specified as an ISO8601 string.
+                  type: string
+                  example: "YYYY-MM-DDTHH:MM:SS.sssZ"
+                returnContent:
+                  description: Specifies whether the documents contents should be returned in the response.
+                  type: boolean
+      responses:
+        '200':
+          description: Successful updated the expiry of the document and is returning the content of the document.
+          headers:
+            Content-Encoding:
+              $ref: "#/components/headers/ContentEncoding"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-CB-Flags:
+              $ref: "#/components/headers/DocumentFlags"
+          content:
+            'application/json':
+              schema:
+                type: object
+                description: The contents of the document.
+                example: {
+                  "title": "Brighton",
+                  "name": "Brighton Palace Pier",
+                  "alt": null,
+                  "address": "Madeira Dr, Brighton BN2 1TW",
+                  "directions": null,
+                  "phone": "01273609361",
+                  "tollfree": null,
+                  "email": "info@brightonpalacepier.co.uk",
+                  "url": "https://www.brightonpier.co.uk",
+                  "hours": "11am–6pm",
+                  "image": null,
+                  "price": "£2",
+                  "content": "The Brighton Palace Pier, commonly known as Brighton Pier or the Palace Pier, is a Grade II listed pleasure pier in Brighton, England, located in the city centre opposite the Old Steine. 
+                               Established in 1899, it was the third pier to be constructed in Brighton after the Royal Suspension Chain Pier and the West Pier, but is now the only one still in operation.",
+                  "geo": {
+                    "lat": 50.815,
+                    "lon": -0.136944,
+                    "accuracy": "RANGE_INTERPOLATED"
+                  },
+                  "activity": "do",
+                  "type": "landmark",
+                  "id": 10044,
+                  "country": "United Kingdom",
+                  "city": "Brighton",
+                  "state": null
+                }
+            'text/plain':
+              example: "Here is the text that was contained in the specified document."
+              schema:
+                type: string
+                description: The text contained within the document.
+                example: Here is the contents of your document
+            'application/octet-stream':
+              example: |-
+                01001000011001010111001001100101001000000110100101110011 
+                00100000011101000110100001100101001000000110001001101001 
+                01101110011000010111001001111001001000000110001101101111 
+                01101110011101000110010101101110011101000111001100100000 
+                01101111011001100010000001110100011010000110010100100000 
+                01110011011100000110010101100011011010010110011001101001 
+                01100101011001000010000001100100011011110110001101110101 
+                0110110101100101011011100111010000101110
+              schema:
+                type: string
+                format: binary
+                description: The binary contents of the document.
+            '*':
+              schema:
+                type: string
+                format: binary
+                description: The contents of the document.
+        '202':
+          description: Successful updated the expiry of the document but is not returning the content of the document.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+        '400':
+          $ref: '#/components/responses/BadRequest' 
+        '403':
+          $ref: '#/components/responses/Forbidden' 
+        '404':
+          $ref: '#/components/responses/NotFound' 
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable' 
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  '/v1.alpha/buckets/{bucketName}/scopes/{scopeName}/collections/{collectionName}/documents/{documentKey}/lookup':
+    parameters:
+      - $ref: '#/components/parameters/AuthorizationHeader'
+      - $ref: '#/components/parameters/BucketName'
+      - $ref: '#/components/parameters/ScopeName'
+      - $ref: '#/components/parameters/CollectionName'
+      - $ref: '#/components/parameters/DocumentKey'
+    post:
+      operationId: lookupInDocument
+      tags:
+        - Sub-Document Operations
+      requestBody:
+        required: true
+        content:
+         'application/json':
+            schema:
+              type: object
+              properties:
+                operations:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/LookupInOperation'
+      responses:
+        '200':
+          description: Successful performed the operation.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LookupInOperationResult'
+        '400':
+          $ref: '#/components/responses/BadRequest' 
+        '403':
+          $ref: '#/components/responses/Forbidden' 
+        '404':
+          $ref: '#/components/responses/NotFound' 
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable' 
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  '/v1.alpha/buckets/{bucketName}/scopes/{scopeName}/collections/{collectionName}/documents/{documentKey}/mutate':
+    parameters:
+      - $ref: '#/components/parameters/AuthorizationHeader'
+      - $ref: '#/components/parameters/BucketName'
+      - $ref: '#/components/parameters/ScopeName'
+      - $ref: '#/components/parameters/CollectionName'
+      - $ref: '#/components/parameters/DocumentKey'
+    post:
+      operationId: mutateInDocument
+      tags:
+        - Sub-Document Operations
+      parameters:
+        - $ref: '#/components/parameters/IfMatchHeader'
+        - $ref: '#/components/parameters/ExpiresHeader'
+        - $ref: '#/components/parameters/DurabilityLevelHeader'
+      requestBody:
+        required: true
+        content:
+         'application/json':
+            schema:
+              type: object
+              properties:
+                operations:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/MutateInOperation"
+                storeSemantic:
+                  $ref: '#/components/schemas/StoreSemantic'
+      responses:
+        '200':
+          description: Successful updated the document.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MutateInOperationResult"
+        '400':
+          $ref: '#/components/responses/BadRequest' 
+        '403':
+          $ref: '#/components/responses/Forbidden' 
+        '404':
+          $ref: '#/components/responses/NotFound' 
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable' 
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+components:
+  securitySchemes:
+    BasicAuth:
+      type: http
+      scheme: basic
+  responses:
+    BadRequest: # 400
+      description: The request was malformed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            BadRequest:
+              value:
+                code: InvalidArgument
+                message: The request was malformed or invalid.
+    Forbidden: # 403
+      description: The user does not have permission to access the resource
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            Forbidden:
+              value:
+                code: InvalidAuth
+                message: Your username or password is invalid.
+    NotFound: # 404
+      description: The specified resource was not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            NotFound:
+              value:
+                code: ResourceNotFound
+                message: The requested resource was not found.
+    Conflict: # 409
+      description: A conflict occurred while processing the request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            Conflict:
+              value:
+                code: ResourceConflict
+                message: There is a conflict with the current state of a resource.
+    ContentTooLarge: # 413
+      description: The document is too large to be stored
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            ContentTooLarge:
+              value:
+                code: InvalidArgument
+                message: The content of the request was too large.
+    InternalServerError: # 500
+      description: An internal server error occurred
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            InternalServerError:
+              value:
+                code: Internal
+                message: An internal error occurred.
+    ServiceUnavailable: # 503
+      description: One of the underlying services was not available
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            ServiceUnavailable:
+              value:
+                code: UnderlyingServiceUnavailable
+                message: One of the underlying services were not available.
+    GatewayTimeout: # 504
+      description: The request timed out
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            GatewayTimeout:
+              value:
+                code: RequestCanceled
+                message: The request deadline was exceeded.
+  schemas:
+    LookupInOperation:
+      type: object
+      properties:
+        operation:
+          $ref: '#/components/schemas/LookupInOperationType'
+        path:
+          description: That path within the document to perform the operation on.
+          type: string
+          example: "address"
+    LookupInOperationResult:
+      type: object
+      properties:
+        value:
+          example: "Madeira Dr, Brighton BN2 1TW"
+          description: "The value contained in the specified field"
+        error:
+          $ref: '#/components/schemas/SubdocError'
+    MutateInOperation:
+      type: object
+      properties:
+        operation:
+          $ref: '#/components/schemas/MutateInOperationType'
+        path:
+          description: That path within the document to perform the operation on.
+          type: string
+          example: "hours"
+        value:
+          description: The value to use for the sub-document operation.
+          type: object
+          x-go-type: json.RawMessage
+          example: "10am-8pm"
+    MutateInOperationResult:
+      type: object
+      properties:
+        value: {}
+    DocumentEncoding:
+      title: DocumentEncoding
+      description: DocumentEncoding specifies the compression used for the the document.
+      type: string
+      enum:
+        - identity
+        - snappy
+      x-enum-varnames:
+        - DocumentEncodingIdentity
+        - DocumentEncodingSnappy
+    DurabilityLevel:
+      title: DurabilityLevel
+      description: DurabilityLevel specifies the level of synchronous replication to use.
+      type: string
+      enum:
+        - None
+        - Majority
+        - MajorityAndPersistOnMaster
+        - PersistToMajority
+      x-enum-varnames:
+        - DurabilityLevelNone
+        - DurabilityLevelMajority
+        - DurabilityLevelMajorityAndPersistOnMaster
+        - DurabilityLevelPersistToMajority
+    SubdocErrorCode:
+      title: SubdocErrorCode
+      description: SubdocErrorCode specifies the more specified error that occurred in a sub-document operation.
+      type: string
+      enum:
+        - Internal
+        - PathNotFound
+        - PathMismatch
+        - InvalidArgument
+        - UnknownVattr
+      x-enum-varnames:
+        - SubdocErrorCodeInternal
+        - SubdocErrorCodePathNotFound
+        - SubdocErrorCodePathMismatch
+        - SubdocErrorCodeInvalidArgument
+        - SubdocErrorCodeUnknownVattr
+    SubdocError:
+      title: SubdocError
+      description: SubdocError represents an sub-document error from the server.
+      type: object
+      properties:
+        error:
+          $ref: '#/components/schemas/SubdocErrorCode'
+        message:
+          type: string
+          description: A human-readable description of the error.
+      required:
+        - error
+        - message
+      example: null
+    ErrorCode:
+      title: ErrorCode
+      description: ErrorCode specifies the more specified error that occurred.
+      type: string
+      enum:
+        - InvalidArgument
+        - Unauthorized
+        - NoReadAccess
+        - NoWriteAccess
+        - InvalidAuth
+        - Internal
+        - UnderlyingServiceUnavailable
+        - RequestCanceled
+        - DeadlineExceeded
+        - BucketNotFound
+        - ScopeNotFound
+        - CollectionNotFound
+        - DocumentNotFound
+        - DocumentExists
+        - CasMismatch
+        - DocumentLocked
+        - DocumentNotLocked
+        - ValueTooLarge
+        - DocumentTooDeep
+        - DocumentNotJson
+        - PathMismatch
+        - DocumentNotNumeric
+        - PathNotFound
+        - PathExists
+        - PathInvalid
+        - PathTooBig
+        - UnknownVattr
+        - DurabilityImpossible
+      x-enum-varnames:
+        - ErrorCodeInvalidArgument
+        - ErrorCodeUnauthorized
+        - ErrorCodeNoReadAccess
+        - ErrorCodeNoWriteAccess
+        - ErrorCodeInvalidAuth
+        - ErrorCodeInternal
+        - ErrorCodeUnderlyingServiceUnavailable
+        - ErrorCodeRequestCanceled
+        - ErrorCodeDeadlineExceeded
+        - ErrorCodeBucketNotFound
+        - ErrorCodeScopeNotFound
+        - ErrorCodeCollectionNotFound
+        - ErrorCodeDocumentNotFound
+        - ErrorCodeDocumentExists
+        - ErrorCodeCasMismatch
+        - ErrorCodeDocumentLocked
+        - ErrorCodeDocumentNotLocked
+        - ErrorCodeValueTooLarge
+        - ErrorCodeDocumentTooDeep
+        - ErrorCodeDocumentNotJson
+        - ErrorCodePathMismatch
+        - ErrorCodeDocumentNotNumeric
+        - ErrorCodePathNotFound
+        - ErrorCodePathExists
+        - ErrorCodePathInvalid
+        - ErrorCodePathTooBig
+        - ErrorCodeUnknownVattr
+        - ErrorCodeDurabilityImpossible
+    Error:
+      title: Error
+      description: Error represents an error response from the server.
+      type: object
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+          description: A human-readable description of the error.
+        resource:
+          type: string
+          description: The resource that caused the error.
+      required:
+        - error
+        - message
+    StoreSemantic:
+      title: StoreSemantic
+      description: StoreSemantic specifies whether the document mutation should be performed as an insert, upsert or replace.
+      type: string
+      enum:
+        - Upsert
+        - Insert
+        - Replace
+      x-enum-varnames:
+        - StoreSemanticUpsert
+        - StoreSemanticInsert
+        - StoreSemanticReplace
+    LookupInOperationType:
+      title: LookupInOperationType
+      description: LookupInOperationType specifies the lookup operation to perform on the document.
+      type: string
+      enum:
+        - Get
+        - Exists
+        - GetCount
+      x-enum-varnames:
+        - LookupInOperationTypeGet
+        - LookupInOperationTypeExists
+        - LookupInOperationTypeGetCount
+    MutateInOperationType:
+      title: MutateInOperationType
+      description: MutateInOperationType specifies the mutation operation to perform on the document.
+      type: string
+      enum:
+        - DictAdd
+        - DictSet
+        - Delete
+        - Replace
+        - ArrayPushLast
+        - ArrayPushFirst
+        - ArrayInsert
+        - ArrayAddUnique
+        - Counter
+      x-enum-varnames:
+        - MutateInOperationTypeDictAdd
+        - MutateInOperationTypeDictSet
+        - MutateInOperationTypeDelete
+        - MutateInOperationTypeReplace
+        - MutateInOperationTypeArrayPushLast
+        - MutateInOperationTypeArrayPushFirst
+        - MutateInOperationTypeArrayInsert
+        - MutateInOperationTypeArrayAddUnique
+        - MutateInOperationTypeCounter
+      example: Upsert
+  parameters:
+    AuthorizationHeader:
+      in: header
+      name: Authorization
+      description: Header for authentication
+      schema:
+        type: string
+      required: true
+    AcceptEncodingHeader:
+      in: header
+      name: Accept-Encoding
+      description: Specifies the compression used for the response in HTTP content-negotiation format.
+      schema:
+        type: string
+    ContentEncodingHeader:
+      in: header
+      name: Content-Encoding
+      description: The encoding of the document
+      schema:
+        $ref: '#/components/schemas/DocumentEncoding'
+    IfMatchHeader:
+      in: header
+      name: If-Match
+      description: The CAS of the document to check before updating.
+      schema:
+        type: string
+    ExpiresHeader:
+      in: header
+      name: Expires
+      description: The expiry time of the document.
+      schema:
+        type: string
+    DocumentFlagsHeader:
+      in: header
+      name: X-CB-Flags
+      description: The Flags of the document.
+      schema:
+        type: integer
+        format: uint32
+    DurabilityLevelHeader:
+      in: header
+      name: X-CB-DurabilityLevel
+      description: The level of durability required for this write operation.
+      schema:
+        $ref: '#/components/schemas/DurabilityLevel'
+    BucketName:
+      in: path
+      name: bucketName
+      description: name of the bucket containing the document
+      schema:
+        type: string
+      required: true
+    ScopeName:
+      in: path
+      name: scopeName
+      description: name of the scope containing the document
+      schema:
+        type: string
+      required: true
+    CollectionName:
+      in: path
+      name: collectionName
+      description: name of the collection containing the document
+      schema:
+        type: string
+      required: true
+    DocumentKey:
+      in: path
+      name: documentKey
+      description: name of the document
+      schema:
+        type: string
+      required: true
+  headers:
+    ContentEncoding:
+      description: The encoding of the document
+      schema:
+        $ref: '#/components/schemas/DocumentEncoding'
+    ETag:
+      description: The CAS of the document.
+      schema:
+        type: string
+    Expires:
+      description: The expiry time of the document represented as an HTTP Date header.
+      schema:
+        type: string
+    DocumentFlags:
+      description: The Flags of the document.
+      schema:
+        type: integer
+        format: uint32
+    MutationToken:
+      schema:
+        type: string
+      description: A token representing the mutation of the document.
