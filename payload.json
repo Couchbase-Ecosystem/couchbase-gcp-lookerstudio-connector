@@ -1,0 +1,50 @@
+{
+    "projectId": "b1e809ff-9d29-405e-928f-570bb66f9f2d",
+    "preAuthorizeSupport": true,
+    "specs": [
+        {
+            "provider": "aws",
+            "compute": {
+                "type": "c5.2xlarge",
+                "cpu": 8,
+                "memoryInGb": 16
+            },
+            "disk": {
+                "type": "gp3",
+                "sizeInGb": 50,
+                "iops": 3000
+            },
+            "services": [
+                {
+                    "type": "kv"
+                },
+                {
+                    "type": "index"
+                },
+                {
+                    "type": "n1ql"
+                },
+                {
+                    "type": "fts"
+                }
+            ],
+            "count": 3,
+            "diskAutoScaling": {
+                "enabled": true
+            }
+        }
+    ],
+    "name": "three_nodes_data_api_test",
+    "region": "us-east-1",
+    "provider": "hostedAWS",
+    "cidr": "10.2.0.0/24",
+    "description": "Cluster with Data API override image AWS",
+    "timezone": "PT",
+    "singleAZ": false,
+    "package": "developerPro",
+    "server": "7.6",
+    "overRide": {
+        "image": "couchbase-cloud-server-7.6.5-x86_64-cng-test-12.05.2025",
+        "server": "7.6.5"
+    }
+} 
