@@ -523,7 +523,7 @@ function getSchema(request) {
       
       // Use the collection name as an alias for RAW projection.
       // Using direct dot notation for FROM clause as backticks were causing issues via API.
-      const statement = `SELECT RAW ${collection} FROM ${bucket}.${scope}.${collection} LIMIT 1`;
+      const statement = `SELECT RAW ${collection} FROM \`${bucket}\`.\`${scope}\`.\`${collection}\` LIMIT 1`;
       Logger.log('getSchema: Retrieving sample document via Query Service using executeN1qlQuery.');
       Logger.log('getSchema: Statement: %s', statement);
 
@@ -653,7 +653,7 @@ function getData(request) {
       const [bucket, scope, collection] = collectionParts;
       const queryServiceUrl = `${apiUrl}/_p/query/query/service`;
       // Use the collection name as an alias for RAW projection
-      const statement = `SELECT RAW ${collection} FROM \\\`${bucket}\\\`.\\\`${scope}\\\`.\\\`${collection}\\\` LIMIT ${maxRows}`;
+      const statement = `SELECT RAW ${collection} FROM \`${bucket}\`.\`${scope}\`.\`${collection}\` LIMIT ${maxRows}`;
       Logger.log('getData: Retrieving documents via Query Service: %s', queryServiceUrl);
       Logger.log('getData: Statement: %s', statement);
 
