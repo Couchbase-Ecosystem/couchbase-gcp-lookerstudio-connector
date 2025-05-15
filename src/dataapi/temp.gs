@@ -34,9 +34,9 @@ function validateCredentials(path, username, password) {
   // Construct API URL for Data API
   const apiUrl = constructApiUrl(path);
   
-  // Test endpoint - we'll try to get a list of buckets which requires valid credentials
-  const bucketListUrl = apiUrl + '/v2/databases';
-  Logger.log('validateCredentials constructed Data API URL: %s', bucketListUrl);
+  // Test endpoint - we'll use /v1/callerIdentity which requires valid credentials
+  const validationUrl = apiUrl + '/v1/callerIdentity';
+  Logger.log('validateCredentials constructed Data API URL for validation: %s', validationUrl);
 
   const options = {
     method: 'get',
@@ -50,7 +50,7 @@ function validateCredentials(path, username, password) {
 
   try {
     Logger.log('Sending validation request...');
-    const response = UrlFetchApp.fetch(bucketListUrl, options);
+    const response = UrlFetchApp.fetch(validationUrl, options);
     const responseCode = response.getResponseCode();
     const responseText = response.getContentText();
     Logger.log('Validation response code: %s', responseCode);
@@ -144,140 +144,126 @@ function resetAuth() {
 // ==========================================================================
 
 /**
- * Fetches available buckets, scopes, and collections from Couchbase Data API.
+ * Helper function to execute N1QL queries.
+ */
+function executeN1qlQuery(apiUrl, authHeader, statement) {
+  const queryServiceUrl = apiUrl + '/_p/query/query/service';
+  Logger.log('executeN1qlQuery: URL: %s, Statement: %s', queryServiceUrl, statement);
+
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: authHeader },
+    payload: JSON.stringify({ statement: statement }),
+    muteHttpExceptions: true,
+    validateHttpsCertificates: false // Consistent with other fetch calls
+  };
+
+  try {
+    const response = UrlFetchApp.fetch(queryServiceUrl, options);
+    const responseCode = response.getResponseCode();
+    const responseText = response.getContentText();
+
+    if (responseCode === 200) {
+      const queryResult = JSON.parse(responseText);
+      if (queryResult.results) {
+        Logger.log('executeN1qlQuery: Success, %s results.', queryResult.results.length);
+        return queryResult.results; // This is an array of results
+      } else if (queryResult.status === 'success' && queryResult.results === undefined) {
+        // Some queries might return success with no results field if empty, treat as empty array
+        Logger.log('executeN1qlQuery: Success but no "results" field, assuming empty. Response: %s', responseText);
+        return [];
+      } else {
+        Logger.log('executeN1qlQuery: Query successful but response format unexpected. Code: %s, Response: %s', responseCode, responseText);
+        // Consider how to handle this - could be an error or just an empty set for this API version
+        return null; // Indicate an issue or unexpected format
+      }
+    } else {
+      Logger.log('executeN1qlQuery: Error. Code: %s, Response: %s', responseCode, responseText);
+      return null; // Indicate error
+    }
+  } catch (e) {
+    Logger.log('executeN1qlQuery: Exception during fetch: %s. Statement: %s', e.toString(), statement);
+    return null; // Indicate error
+  }
+}
+
+/**
+ * Fetches available buckets, scopes, and collections from Couchbase Data API using N1QL.
  * Used to populate dropdowns in the config UI.
  */
 function fetchCouchbaseMetadata() {
-  // Get stored credentials from PropertiesService
   const userProperties = PropertiesService.getUserProperties();
   const path = userProperties.getProperty('dscc.path');
   const username = userProperties.getProperty('dscc.username');
   const password = userProperties.getProperty('dscc.password');
   
-  Logger.log('fetchCouchbaseMetadata: Starting fetch with path: %s, username: %s', path, username);
+  Logger.log('fetchCouchbaseMetadata (N1QL): Starting fetch with path: %s, username: %s', path, username);
   
   if (!path || !username || !password) {
-    Logger.log('fetchCouchbaseMetadata: Authentication credentials missing from storage.');
-    return {
-      buckets: [],
-      scopesCollections: {}
-    };
+    Logger.log('fetchCouchbaseMetadata (N1QL): Auth credentials missing.');
+    return { buckets: [], scopesCollections: {} };
   }
   
-  // Construct API URL for Data API
   const apiUrl = constructApiUrl(path);
-  const bucketsUrl = apiUrl + '/v2/databases';
-  Logger.log('fetchCouchbaseMetadata: Using Data API URL: %s', bucketsUrl);
-
   const authHeader = 'Basic ' + Utilities.base64Encode(username + ':' + password);
-  const options = {
-    method: 'get',
-    contentType: 'application/json',
-    headers: {
-      Authorization: authHeader
-    },
-    muteHttpExceptions: true,
-    validateHttpsCertificates: false
-  };
   
-  // Initialize empty result structure
-  let bucketNames = [];
-  const scopesCollections = {};
-  
+  const scopesCollections = {}; // Structure: { bucket: { scope: [collection1, collection2] } }
+  let bucketNames = []; // To keep track of unique bucket names for the return structure
+
   try {
-    // First get all buckets
-    Logger.log('fetchCouchbaseMetadata: Querying for buckets');
-    const bucketResponse = UrlFetchApp.fetch(bucketsUrl, options);
-    
-    if (bucketResponse.getResponseCode() === 200) {
-      const bucketData = JSON.parse(bucketResponse.getContentText());
-      
-      if (bucketData && Array.isArray(bucketData)) {
-        bucketNames = bucketData
-          .filter(bucket => bucket.name) // Filter out any null or undefined
-          .map(bucket => bucket.name);
-        
-        Logger.log('fetchCouchbaseMetadata: Found buckets: %s', bucketNames.join(', '));
-      } else {
-        Logger.log('fetchCouchbaseMetadata: Bucket query result format unexpected or empty.');
-      }
-    } else {
-      Logger.log('Error fetching buckets. Code: %s, Response: %s', 
-                bucketResponse.getResponseCode(), bucketResponse.getContentText());
+    // Use the more direct N1QL query joining system catalogs
+    const n1qlQuery = 'SELECT b.name AS `bucket`, s.name AS `scope`, k.name AS `collection` ' +
+                      'FROM system:buckets AS b ' +
+                      'JOIN system:all_scopes AS s ON s.`bucket` = b.name ' +
+                      'JOIN system:keyspaces AS k ON k.`bucket` = b.name AND k.`scope` = s.name ' +
+                      'ORDER BY b.name, s.name, k.name;';
+
+    const results = executeN1qlQuery(apiUrl, authHeader, n1qlQuery);
+
+    if (results === null) {
+      Logger.log('fetchCouchbaseMetadata (N1QL): Failed to fetch keyspace information or system catalogs not accessible.');
+      return { buckets: [], scopesCollections: {} };
     }
-    
-    // Now get scopes and collections for each bucket
-    for (const bucket of bucketNames) {
-      scopesCollections[bucket] = {};
-      const scopesUrl = apiUrl + `/v2/databases/${bucket}/scopes`;
-      
-      Logger.log('fetchCouchbaseMetadata: Querying for scopes in bucket: %s', bucket);
-      const scopesResponse = UrlFetchApp.fetch(scopesUrl, options);
-      
-      if (scopesResponse.getResponseCode() === 200) {
-        const scopesData = JSON.parse(scopesResponse.getContentText());
-        
-        if (scopesData && Array.isArray(scopesData)) {
-          Logger.log('fetchCouchbaseMetadata: Found %s scopes in bucket %s', scopesData.length, bucket);
-          
-          // Process each scope and get its collections
-          for (const scope of scopesData) {
-            if (!scope.name) continue;
-            
-            const scopeName = scope.name;
-            scopesCollections[bucket][scopeName] = [];
-            
-            const collectionsUrl = apiUrl + `/v2/databases/${bucket}/scopes/${scopeName}/collections`;
-            Logger.log('fetchCouchbaseMetadata: Querying for collections in bucket: %s, scope: %s', bucket, scopeName);
-            
-            const collectionsResponse = UrlFetchApp.fetch(collectionsUrl, options);
-            
-            if (collectionsResponse.getResponseCode() === 200) {
-              const collectionsData = JSON.parse(collectionsResponse.getContentText());
-              
-              if (collectionsData && Array.isArray(collectionsData)) {
-                Logger.log('fetchCouchbaseMetadata: Found %s collections in scope %s', collectionsData.length, scopeName);
-                
-                for (const collection of collectionsData) {
-                  if (collection.name) {
-                    scopesCollections[bucket][scopeName].push(collection.name);
-                    Logger.log('fetchCouchbaseMetadata: Added: %s.%s.%s', 
-                              bucket, scopeName, collection.name);
-                  }
-                }
-              }
-            } else {
-              Logger.log('Error fetching collections. Code: %s, Response: %s', 
-                        collectionsResponse.getResponseCode(), collectionsResponse.getContentText());
-            }
-          }
-        }
-      } else {
-        Logger.log('Error fetching scopes. Code: %s, Response: %s', 
-                  scopesResponse.getResponseCode(), scopesResponse.getContentText());
-      }
+
+    if (results.length === 0) {
+      Logger.log('fetchCouchbaseMetadata (N1QL): No keyspaces (buckets/scopes/collections) found.');
+      return { buckets: [], scopesCollections: {} };
     }
+
+    Logger.log('fetchCouchbaseMetadata (N1QL): Processing %s items from query.', results.length);
     
-    // Add _default._default if no other collections were found for a bucket
-    bucketNames.forEach(bucketName => {
-      if (Object.keys(scopesCollections[bucketName]).length === 0) {
-        scopesCollections[bucketName] = { '_default': ['_default'] };
-        Logger.log('fetchCouchbaseMetadata: Added default keyspace for bucket %s', bucketName);
+    results.forEach(item => {
+      const bucket = item.bucket;
+      const scope = item.scope;
+      const collection = item.collection;
+
+      if (!bucket || !scope || !collection) {
+        Logger.log('fetchCouchbaseMetadata (N1QL): Skipping item with missing bucket, scope, or collection: %s', JSON.stringify(item));
+        return; // continue to next item
       }
+
+      if (!scopesCollections[bucket]) {
+        scopesCollections[bucket] = {};
+        bucketNames.push(bucket); // Add to unique bucket names list
+      }
+      if (!scopesCollections[bucket][scope]) {
+        scopesCollections[bucket][scope] = [];
+      }
+      scopesCollections[bucket][scope].push(collection);
+      // Logger.log('fetchCouchbaseMetadata (N1QL): Added: %s.%s.%s', bucket, scope, collection); // Can be verbose
     });
+    
+    Logger.log('fetchCouchbaseMetadata (N1QL): Final structure: %s', JSON.stringify(scopesCollections));
 
     return {
-      buckets: bucketNames,
+      buckets: bucketNames, // Primarily for consistency, scopesCollections is the main structure used by getConfig
       scopesCollections: scopesCollections
     };
     
   } catch (e) {
-    Logger.log('Error in fetchCouchbaseMetadata: %s', e.toString());
-    Logger.log('Exception details: %s', e.stack);
-    return {
-      buckets: [],
-      scopesCollections: {}
-    };
+    Logger.log('Error in fetchCouchbaseMetadata (N1QL): %s. Stack: %s', e.toString(), e.stack);
+    return { buckets: [], scopesCollections: {} }; // Fallback on any exception
   }
 }
 
@@ -500,180 +486,113 @@ function getSchema(request) {
       throwUserError('Authentication credentials missing. Please reauthenticate.');
     }
     
-    // Get configuration parameters
     const configParams = request.configParams || {};
-    
-    // Construct the API URL
     const apiUrl = constructApiUrl(path);
-    
-    // Determine if we're using document key path or collection
-    let documentData;
-    
+    let documentForSchemaInference;
+
     if (configParams.documentKeyPath && configParams.documentKeyPath.trim() !== '') {
-      // Use document key path to get a specific document
       const docPathParts = configParams.documentKeyPath.split('/');
       if (docPathParts.length !== 4) {
         throwUserError('Invalid document key path. Format should be "bucket/scope/collection/documentKey"');
       }
-      
       const [bucket, scope, collection, documentKey] = docPathParts;
       const documentUrl = `${apiUrl}/v1/buckets/${bucket}/scopes/${scope}/collections/${collection}/documents/${documentKey}`;
-      
-      Logger.log('getSchema: Retrieving specific document using URL: %s', documentUrl);
-      
-      const options = {
+      Logger.log('getSchema: Retrieving specific document for schema: %s', documentUrl);
+
+      const fetchOptions = {
         method: 'get',
         contentType: 'application/json',
-        headers: {
-          'Authorization': 'Basic ' + Utilities.base64Encode(username + ':' + password)
-        },
+        headers: { 'Authorization': 'Basic ' + Utilities.base64Encode(username + ':' + password) },
         muteHttpExceptions: true,
         validateHttpsCertificates: false
       };
-      
-      const response = UrlFetchApp.fetch(documentUrl, options);
-      const responseCode = response.getResponseCode();
-      
-      if (responseCode !== 200) {
-        Logger.log('API error in getSchema for document: %s, Error: %s', responseCode, response.getContentText());
-        throwUserError(`Couchbase API error (${responseCode}): ${response.getContentText()}`);
+      const response = UrlFetchApp.fetch(documentUrl, fetchOptions);
+      if (response.getResponseCode() !== 200) {
+        throwUserError(`Couchbase API error (${response.getResponseCode()}): ${response.getContentText()}`);
       }
-      
-      documentData = JSON.parse(response.getContentText());
-      Logger.log('getSchema: Successfully retrieved document data');
-      
+      documentForSchemaInference = JSON.parse(response.getContentText());
+      Logger.log('getSchema: Successfully retrieved specific document for schema.');
+
     } else if (configParams.collection && configParams.collection.trim() !== '') {
-      // Use collection path to get documents
       const collectionParts = configParams.collection.split('.');
       if (collectionParts.length !== 3) {
-        throwUserError('Invalid collection path specified. Use format: bucket.scope.collection');
+        throwUserError('Invalid collection path. Format: bucket.scope.collection');
       }
-      
       const [bucket, scope, collection] = collectionParts;
-      const documentsUrl = `${apiUrl}/v1/buckets/${bucket}/scopes/${scope}/collections/${collection}/docs?limit=1`;
+      const authHeader = 'Basic ' + Utilities.base64Encode(username + ':' + password);
       
-      Logger.log('getSchema: Retrieving sample document using URL: %s', documentsUrl);
-      
-      const options = {
-        method: 'get',
-        contentType: 'application/json',
-        headers: {
-          'Authorization': 'Basic ' + Utilities.base64Encode(username + ':' + password)
-        },
-        muteHttpExceptions: true,
-        validateHttpsCertificates: false
-      };
-      
-      const response = UrlFetchApp.fetch(documentsUrl, options);
-      const responseCode = response.getResponseCode();
-      
-      if (responseCode !== 200) {
-        Logger.log('API error in getSchema for collection: %s, Error: %s', responseCode, response.getContentText());
-        throwUserError(`Couchbase API error (${responseCode}): ${response.getContentText()}`);
+      // Use the collection name as an alias for RAW projection.
+      // Using direct dot notation for FROM clause as backticks were causing issues via API.
+      const statement = `SELECT RAW ${collection} FROM ${bucket}.${scope}.${collection} LIMIT 1`;
+      Logger.log('getSchema: Retrieving sample document via Query Service using executeN1qlQuery.');
+      Logger.log('getSchema: Statement: %s', statement);
+
+      const queryResults = executeN1qlQuery(apiUrl, authHeader, statement);
+
+      if (queryResults === null) {
+        // executeN1qlQuery already logs details, so we can throw a more specific error here.
+        throwUserError('Failed to retrieve sample document for schema. Check logs for query error details.');
       }
-      
-      const responseData = JSON.parse(response.getContentText());
-      
-      if (!responseData.results || responseData.results.length === 0) {
-        Logger.log('No documents found in collection');
-        // Return a minimal default schema
-        return { schema: [{ name: 'empty_result', label: 'Empty Result', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}] };
+      if (queryResults.length === 0) {
+        Logger.log('No documents returned from query for schema inference.');
+        // Return a schema with a placeholder if the collection is empty
+        return { schema: [{ name: 'empty_collection', label: 'Collection is Empty or No Documents Found', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}] };
       }
-      
-      // Use the first document for schema inference
-      documentData = responseData.results[0].document;
-      Logger.log('getSchema: Successfully retrieved sample document data');
-      
+      documentForSchemaInference = queryResults[0]; // executeN1qlQuery returns the array of results
+      Logger.log('getSchema: Successfully retrieved sample document via Query Service.');
+
     } else {
-      throwUserError('Either collection or document key path must be specified to infer schema.');
+      throwUserError('Either collection or document key path must be specified for schema inference.');
     }
     
     // Function to recursively process document fields
     function processFields(obj, prefix = '') {
       const fields = [];
-      
-      if (!obj || typeof obj !== 'object') {
-        return fields;
-      }
-      
+      if (!obj || typeof obj !== 'object') return fields;
       Object.keys(obj).forEach(key => {
         const fieldName = prefix ? `${prefix}.${key}` : key;
         const value = obj[key];
-        
+        let dataType = 'STRING';
+        let conceptType = 'DIMENSION';
         if (value === null || value === undefined) {
-          // For null/undefined values, default to STRING type
-          fields.push({
-            name: fieldName,
-            label: fieldName,
-            dataType: 'STRING',
-            semantics: { conceptType: 'DIMENSION' }
-          });
+          dataType = 'STRING';
         } else if (typeof value === 'number') {
-          fields.push({
-            name: fieldName,
-            label: fieldName,
-            dataType: 'NUMBER',
-            semantics: { conceptType: 'METRIC' }
-          });
+          dataType = 'NUMBER';
+          conceptType = 'METRIC';
         } else if (typeof value === 'boolean') {
-          fields.push({
-            name: fieldName,
-            label: fieldName,
-            dataType: 'BOOLEAN',
-            semantics: { conceptType: 'DIMENSION' }
-          });
+          dataType = 'BOOLEAN';
         } else if (typeof value === 'string') {
-          // Check if it looks like a URL
           if (value.startsWith('http://') || value.startsWith('https://')) {
-            fields.push({
-              name: fieldName,
-              label: fieldName,
-              dataType: 'URL',
-              semantics: { conceptType: 'DIMENSION' }
-            });
-          } else {
-            fields.push({
-              name: fieldName,
-              label: fieldName,
-              dataType: 'STRING',
-              semantics: { conceptType: 'DIMENSION' }
-            });
+            dataType = 'URL';
           }
-        } else if (typeof value === 'object' && !Array.isArray(value)) {
-          // Handle nested objects
-          fields.push(...processFields(value, fieldName));
         } else if (Array.isArray(value)) {
-          // For arrays, we'll represent the whole array as a single STRING field
-          fields.push({
-            name: fieldName,
-            label: fieldName,
-            dataType: 'STRING',
-            semantics: { conceptType: 'DIMENSION' }
-          });
-          
-          // If array contains objects, we could potentially process them recursively
-          // This is simplified for now
+          // Represent arrays as STRING for simplicity in Looker Studio
+          dataType = 'STRING'; 
+        } else if (typeof value === 'object') {
+          // For nested objects, recursively add their fields
+          fields.push(...processFields(value, fieldName));
+          return; // Skip adding the parent object itself as a field
         }
+        fields.push({
+          name: fieldName,
+          label: fieldName,
+          dataType: dataType,
+          semantics: { conceptType: conceptType }
+        });
       });
-      
       return fields;
     }
-    
-    // Process the document to extract schema
-    const fields = processFields(documentData);
-    
-    if (fields.length === 0) {
-      Logger.log('Warning: Schema inference resulted in zero fields. Check collection/document and data.');
-      // Provide a minimal default schema
+
+    const schemaFields = processFields(documentForSchemaInference);
+    if (schemaFields.length === 0) {
+      Logger.log('Warning: Schema inference resulted in zero fields.');
       return { schema: [{ name: 'empty_result', label: 'Empty Result', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}] };
     }
-    
-    Logger.log('getSchema: Final inferred schema: %s', JSON.stringify(fields));
-    return { schema: fields };
-    
+    Logger.log('getSchema: Final inferred schema: %s', JSON.stringify(schemaFields));
+    return { schema: schemaFields };
+
   } catch (e) {
-    Logger.log('Error in getSchema: %s', e.message);
-    Logger.log('getSchema Error Stack: %s', e.stack);
+    Logger.log('Error in getSchema: %s. Stack: %s', e.message, e.stack);
     throwUserError(`Error inferring schema: ${e.message}`);
   }
 }
@@ -688,209 +607,139 @@ function getData(request) {
   Logger.log('getData request: %s', JSON.stringify(request));
   
   try {
-    // Get credentials from user properties
     const userProperties = PropertiesService.getUserProperties();
     const path = userProperties.getProperty('dscc.path');
     const username = userProperties.getProperty('dscc.username');
     const password = userProperties.getProperty('dscc.password');
-    
     if (!path || !username || !password) {
-      Logger.log('getData: Missing credentials');
-      throwUserError('Authentication credentials missing. Please reauthenticate.');
+      throwUserError('Authentication credentials missing.');
     }
-    
-    // Get configuration
+
     const configParams = request.configParams || {};
-    
-    if ((!configParams.collection || configParams.collection.trim() === '') && 
-        (!configParams.documentKeyPath || configParams.documentKeyPath.trim() === '')) {
-      throwUserError('Either collection or document key path must be specified.');
-    }
-    
-    // Get requested fields
+    const apiUrl = constructApiUrl(path);
     const requestedFieldsObject = getRequestedFields(request);
     const requestedFieldsArray = requestedFieldsObject.asArray();
-    const requestedFieldIds = requestedFieldsArray.map(field => field.getId());
-    
-    // Determine max rows
     const maxRows = parseInt(configParams.maxRows, 10) || 100;
-    
-    // Construct the API URL
-    const apiUrl = constructApiUrl(path);
-    
-    // Variable to store the documents
     let documents = [];
-    
+
     if (configParams.documentKeyPath && configParams.documentKeyPath.trim() !== '') {
-      // Use document key path to get a specific document
       const docPathParts = configParams.documentKeyPath.split('/');
       if (docPathParts.length !== 4) {
-        throwUserError('Invalid document key path. Format should be "bucket/scope/collection/documentKey"');
+        throwUserError('Invalid document key path. Format: bucket/scope/collection/documentKey');
       }
-      
       const [bucket, scope, collection, documentKey] = docPathParts;
       const documentUrl = `${apiUrl}/v1/buckets/${bucket}/scopes/${scope}/collections/${collection}/documents/${documentKey}`;
-      
-      Logger.log('getData: Retrieving specific document using URL: %s', documentUrl);
-      
-      const options = {
+      Logger.log('getData: Retrieving specific document: %s', documentUrl);
+
+      const fetchOptions = {
         method: 'get',
         contentType: 'application/json',
-        headers: {
-          'Authorization': 'Basic ' + Utilities.base64Encode(username + ':' + password)
-        },
+        headers: { 'Authorization': 'Basic ' + Utilities.base64Encode(username + ':' + password) },
         muteHttpExceptions: true,
         validateHttpsCertificates: false
       };
-      
-      const response = UrlFetchApp.fetch(documentUrl, options);
-      const responseCode = response.getResponseCode();
-      
-      if (responseCode !== 200) {
-        Logger.log('API error in getData for document: %s, Error: %s', responseCode, response.getContentText());
-        throwUserError(`Couchbase API error (${responseCode}): ${response.getContentText()}`);
+      const response = UrlFetchApp.fetch(documentUrl, fetchOptions);
+      if (response.getResponseCode() !== 200) {
+        throwUserError(`Couchbase API error (${response.getResponseCode()}): ${response.getContentText()}`);
       }
-      
-      // Add the single document to our list
       documents.push(JSON.parse(response.getContentText()));
-      Logger.log('getData: Successfully retrieved document data');
-      
-    } else {
-      // Use collection path to get documents
+      Logger.log('getData: Successfully retrieved specific document.');
+
+    } else if (configParams.collection && configParams.collection.trim() !== '') {
       const collectionParts = configParams.collection.split('.');
       if (collectionParts.length !== 3) {
-        throwUserError('Invalid collection path specified. Use format: bucket.scope.collection');
+        throwUserError('Invalid collection path. Format: bucket.scope.collection');
       }
-      
       const [bucket, scope, collection] = collectionParts;
-      const documentsUrl = `${apiUrl}/v1/buckets/${bucket}/scopes/${scope}/collections/${collection}/docs?limit=${maxRows}`;
-      
-      Logger.log('getData: Retrieving documents using URL: %s', documentsUrl);
-      
-      const options = {
-        method: 'get',
+      const queryServiceUrl = `${apiUrl}/_p/query/query/service`;
+      // Use the collection name as an alias for RAW projection
+      const statement = `SELECT RAW ${collection} FROM \\\`${bucket}\\\`.\\\`${scope}\\\`.\\\`${collection}\\\` LIMIT ${maxRows}`;
+      Logger.log('getData: Retrieving documents via Query Service: %s', queryServiceUrl);
+      Logger.log('getData: Statement: %s', statement);
+
+      const fetchOptions = {
+        method: 'post',
         contentType: 'application/json',
-        headers: {
-          'Authorization': 'Basic ' + Utilities.base64Encode(username + ':' + password)
-        },
+        headers: { 'Authorization': 'Basic ' + Utilities.base64Encode(username + ':' + password) },
+        payload: JSON.stringify({ statement: statement }),
         muteHttpExceptions: true,
         validateHttpsCertificates: false
       };
-      
-      const response = UrlFetchApp.fetch(documentsUrl, options);
+      const response = UrlFetchApp.fetch(queryServiceUrl, fetchOptions);
       const responseCode = response.getResponseCode();
-      
+      const responseText = response.getContentText();
+
       if (responseCode !== 200) {
-        Logger.log('API error in getData for collection: %s, Error: %s', responseCode, response.getContentText());
-        throwUserError(`Couchbase API error (${responseCode}): ${response.getContentText()}`);
+        throwUserError(`Couchbase Query API error (${responseCode}): ${responseText}`);
       }
-      
-      const responseData = JSON.parse(response.getContentText());
-      
-      if (!responseData.results || responseData.results.length === 0) {
-        Logger.log('No documents found in collection');
-        return {
-          schema: requestedFieldsObject.build(),
-          rows: []
-        };
+      const queryResult = JSON.parse(responseText);
+      if (queryResult.results) {
+        documents = queryResult.results; // SELECT RAW returns an array of documents
       }
+      Logger.log('getData: Successfully retrieved %s documents via Query Service.', documents.length);
       
-      // Extract the documents from the response
-      documents = responseData.results.map(result => result.document);
-      Logger.log('getData: Successfully retrieved %s documents', documents.length);
+    } else {
+      throwUserError('Either collection or document key path must be specified.');
     }
-    
-    // Helper function to get nested values by path including arrays
+
+    // Helper function to get nested values
     function getNestedValue(obj, path) {
-      // Handle array notation like "schedule[0].day"
-      const parts = path.replace(/\[(\d+)\]/g, '.$1').split('.');
+      const parts = path.replace(/[(\d+)]/g, '.$1').split('.');
       let current = obj;
-      
       for (let i = 0; i < parts.length; i++) {
-        if (current === null || current === undefined) {
-          return null;
-        }
-        
-        // Handle array index when the key is a number
+        if (current === null || current === undefined) return null;
         const key = parts[i];
         if (!isNaN(key) && Array.isArray(current)) {
-          const index = parseInt(key, 10);
-          current = index < current.length ? current[index] : null;
+          current = parseInt(key, 10) < current.length ? current[parseInt(key, 10)] : null;
         } else {
           current = current[key];
         }
       }
-      
       return current;
     }
-    
-    // Process the documents into rows
-    const rows = documents.map(document => {
+
+    const rows = documents.map(doc => {
       const values = [];
-      
       requestedFieldsArray.forEach(field => {
         const fieldName = field.getId();
-        const fieldType = field.getType();
-        let value = getNestedValue(document, fieldName);
-        
-        // Process and format value based on field type
+        const fieldType = field.getType(); // From schema
+        let value = getNestedValue(doc, fieldName);
         let formattedValue = null;
-        
-        if (value === null || value === undefined) {
-          formattedValue = '';
-        } else {
+        if (value !== null && value !== undefined) {
           switch (fieldType) {
             case DataStudioApp.createCommunityConnector().FieldType.NUMBER:
               formattedValue = Number(value);
-              if (isNaN(formattedValue)) {
-                formattedValue = null;
-              }
+              if (isNaN(formattedValue)) formattedValue = null;
               break;
             case DataStudioApp.createCommunityConnector().FieldType.BOOLEAN:
               if (typeof value === 'string') {
-                const lowerValue = value.toLowerCase();
-                if (lowerValue === 'true') {
-                  formattedValue = true;
-                } else if (lowerValue === 'false') {
-                  formattedValue = false;
-                } else {
-                  formattedValue = null;
-                }
+                const lower = value.toLowerCase();
+                formattedValue = lower === 'true' ? true : (lower === 'false' ? false : null);
               } else {
                 formattedValue = Boolean(value);
               }
               break;
-            default: // STRING and others
-              if (typeof value === 'object') {
-                formattedValue = JSON.stringify(value);
-              } else {
-                formattedValue = value.toString();
-              }
+            default: // STRING, URL, TEXT etc.
+              formattedValue = (typeof value === 'object') ? JSON.stringify(value) : String(value);
               break;
           }
+        } else {
+          formattedValue = ''; // Default for null/undefined as per original logic
         }
-        
         values.push(formattedValue);
       });
-      
       return { values };
     });
-    
-    // Log final rows sample
-    Logger.log('getData: Final rows sample (first %s rows): %s', 
-              Math.min(3, rows.length), 
-              JSON.stringify(rows.slice(0, 3)));
-    
+
+    Logger.log('getData: Final rows sample (first %s): %s', Math.min(3, rows.length), JSON.stringify(rows.slice(0, 3)));
     return {
       schema: requestedFieldsObject.build(),
       rows: rows
     };
-    
+
   } catch (e) {
-    // Improved error logging and handling
-    const errorMessage = e.message ? e.message : 'An unspecified error occurred';
-    Logger.log('Error in getData: %s. Full error object: %s', errorMessage, JSON.stringify(e)); 
-    throwUserError(`Error retrieving data: ${errorMessage}`);
+    Logger.log('Error in getData: %s. Stack: %s', e.message, e.stack);
+    throwUserError(`Error retrieving data: ${e.message}`);
   }
 }
 
@@ -918,16 +767,11 @@ function constructApiUrl(path) {
   // Remove trailing slash if present
   hostAndPort = hostAndPort.replace(/\/$/, '');
   
-  // Check if port is already present (handles IPv4 and IPv6)
-  const hasPort = /:\d+$|]:\d+$/.test(hostAndPort);
-  
-  // For Data API, the default port is 18095
-  if (!hasPort) {
-    hostAndPort += ':18094';
-    Logger.log('constructApiUrl: Added default port 18094 for URL: %s', hostAndPort);
-  } else {
-    Logger.log('constructApiUrl: Port already present in URL: %s', hostAndPort);
-  }
+  // The path provided by the user should now contain the host and optionally the port.
+  // We no longer append a default port. If the service is not on 443,
+  // the user must specify it in the path, e.g., "mycouchbase.local:18095".
+  // For Capella/sandbox URLs, they operate on 443 by default.
+  Logger.log('constructApiUrl: Using host and port as provided (or default 443 if no port specified): %s', hostAndPort);
   
   return 'https://' + hostAndPort;
 }
