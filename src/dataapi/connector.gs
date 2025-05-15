@@ -274,69 +274,121 @@ function getConfig(request) {
   const cc = DataStudioApp.createCommunityConnector();
   var config = cc.getConfig();
 
-  config
-    .newInfo()
-    .setId('instructions')
-    .setText('Select a collection OR enter a document key path for direct access to a specific document.');
+  try {
+    // Determine if this is the first request (no params yet)
+    const isFirstRequest = (request.configParams === undefined);
+    const configParams = request.configParams || {};
 
-  // Fetch buckets, scopes, and collections
-  const metadata = fetchCouchbaseMetadata();
-  Logger.log('getConfig: Metadata fetch returned buckets: %s', JSON.stringify(metadata.buckets));
-  
-  // Use Single Select for the collection, as only the first is used by getSchema/getData
-  const collectionSelect = config
-    .newSelectSingle()
-    .setId('collection')
-    .setName('Couchbase Collection')
-    .setHelpText('Select the collection to query data from (ignored if Document Key Path is entered).')
-    .setAllowOverride(true);
-  
-  // Build a list of all fully qualified collection paths
-  const collectionPaths = [];
-  
-  // Loop through all buckets, scopes, collections to build paths
-  Object.keys(metadata.scopesCollections).forEach(bucket => {
-    Object.keys(metadata.scopesCollections[bucket]).forEach(scope => {
-      metadata.scopesCollections[bucket][scope].forEach(collection => {
-        // Create a fully qualified path: bucket.scope.collection
-        const path = `${bucket}.${scope}.${collection}`;
-        const label = `${bucket} > ${scope} > ${collection}`;
-        collectionPaths.push({ path: path, label: label });
-        
-        Logger.log('getConfig: Added collection path: %s', path);
+    // Set the config to be dynamic based on the official stepped config guide
+    let isStepped = true; // Assume config is ongoing unless proven otherwise
+
+    config
+      .newInfo()
+      .setId('instructions')
+      .setText('Choose a configuration mode: query by selecting a collection, or enter a custom N1QL query.');
+
+    const modeSelector = config.newSelectSingle()
+      .setId('configMode')
+      .setName('Configuration Mode')
+      .setHelpText('Select how you want to define the data source.')
+      .setAllowOverride(true)
+      .setIsDynamic(true); // Changing mode should trigger refresh
+
+    modeSelector.addOption(config.newOptionBuilder().setLabel('Query by Collection').setValue('collection'));
+    modeSelector.addOption(config.newOptionBuilder().setLabel('Use Custom Query').setValue('customQuery'));
+
+    const currentMode = configParams.configMode ? configParams.configMode : 'collection';
+    Logger.log('getConfig: Current mode: %s', currentMode);
+
+    if (currentMode === 'collection') {
+      config.newInfo()
+        .setId('collection_info')
+        .setText('Select a collection to query data from.');
+
+      // Fetch buckets, scopes, and collections
+      const metadata = fetchCouchbaseMetadata();
+      Logger.log('getConfig: Metadata fetch returned buckets: %s', JSON.stringify(metadata.buckets));
+      
+      // Use Single Select for the collection, as only the first is used by getSchema/getData
+      const collectionSelect = config
+        .newSelectSingle()
+        .setId('collection')
+        .setName('Couchbase Collection')
+        .setHelpText('Select the collection to query data from.')
+        .setAllowOverride(true);
+      
+      // Build a list of all fully qualified collection paths
+      const collectionPaths = [];
+      
+      // Loop through all buckets, scopes, collections to build paths
+      Object.keys(metadata.scopesCollections).forEach(bucket => {
+        Object.keys(metadata.scopesCollections[bucket]).forEach(scope => {
+          metadata.scopesCollections[bucket][scope].forEach(collection => {
+            // Create a fully qualified path: bucket.scope.collection
+            const path = `${bucket}.${scope}.${collection}`;
+            const label = `${bucket} > ${scope} > ${collection}`;
+            collectionPaths.push({ path: path, label: label });
+            
+            Logger.log('getConfig: Added collection path: %s', path);
+          });
+        });
       });
-    });
-  });
-  
-  // Sort collection paths alphabetically
-  collectionPaths.sort((a, b) => a.label.localeCompare(b.label));
-  
-  // Add options for each collection path
-  collectionPaths.forEach(item => {
-    collectionSelect.addOption(
-      config.newOptionBuilder().setLabel(item.label).setValue(item.path)
-    );
-  });
+      
+      // Sort collection paths alphabetically
+      collectionPaths.sort((a, b) => a.label.localeCompare(b.label));
+      
+      // Add options for each collection path
+      collectionPaths.forEach(item => {
+        collectionSelect.addOption(
+          config.newOptionBuilder().setLabel(item.label).setValue(item.path)
+        );
+      });
 
-  // Add document key path option
-  config
-    .newTextInput()
-    .setId('documentKeyPath')
-    .setName('Document Key Path')
-    .setHelpText('Enter a document key path in format "bucket/scope/collection/documentKey". If entered, this will be used instead of the collection selection above.')
-    .setPlaceholder('travel-sample/inventory/airline/airline_10')
-    .setAllowOverride(true);
-  
-  // Add max rows option
-  config
-    .newTextInput()
-    .setId('maxRows')
-    .setName('Maximum Rows')
-    .setHelpText('Maximum number of rows to return (default: 100)')
-    .setPlaceholder('100')
-    .setAllowOverride(true);
+      // Check if the collection has been selected - if so, configuration is complete
+      const selectedCollection = configParams.collection ? configParams.collection : null;
+      if (selectedCollection) {
+        isStepped = false; // Config is complete for collection mode if collection is selected
+      }
+      
+      // Only add maxRows if config is complete for this mode
+      if (!isStepped) {
+        config
+          .newTextInput()
+          .setId('maxRows')
+          .setName('Maximum Rows')
+          .setHelpText('Maximum number of rows to return (default: 100)')
+          .setPlaceholder('100')
+          .setAllowOverride(true);
+      }
+    } else if (currentMode === 'customQuery') {
+      config.newInfo()
+        .setId('custom_query_info')
+        .setText('Enter your custom N1QL query below.');
+      config
+        .newTextArea()
+        .setId('query')
+        .setName('Custom N1QL Query')
+        .setHelpText('Enter a valid N1QL query. Ensure you include a LIMIT clause if needed.')
+        .setPlaceholder('SELECT * FROM `travel-sample`.`inventory`.`airline` WHERE country = "France" LIMIT 100')
+        .setAllowOverride(true);
+      
+      isStepped = false; // Config is complete once the custom query text area is shown
+    }
 
-  return config.build();
+    // Set the stepped config status for the response
+    config.setIsSteppedConfig(isStepped);
+    Logger.log('getConfig: Setting setIsSteppedConfig to: %s', isStepped);
+
+    return config.build();
+
+  } catch (e) {
+    Logger.log('ERROR in getConfig: %s. Stack: %s', e.message, e.stack);
+    DataStudioApp.createCommunityConnector()
+      .newUserError()
+      .setText('An unexpected error occurred while building the configuration. Please check the Apps Script logs for details. Error: ' + e.message)
+      .setDebugText('getConfig failed: ' + e.stack)
+      .throwException();
+  }
 }
 
 /**
@@ -362,22 +414,33 @@ function validateConfig(configParams) {
     throwUserError('Authentication credentials missing. Please reauthenticate.');
   }
   
-  // Check that either a collection or document key path is provided
-  if ((!configParams.collection || configParams.collection.trim() === '') && 
-      (!configParams.documentKeyPath || configParams.documentKeyPath.trim() === '')) {
-    throwUserError('Either a collection or a document key path must be specified');
+  if (!configParams.configMode) {
+    throwUserError('Configuration mode not specified. Please select a mode.');
   }
-  
+
   // Create a validated config object with defaults
   const validatedConfig = {
     path: path,
     username: username,
     password: password,
-    collection: configParams.collection ? configParams.collection.trim() : '',
-    documentKeyPath: configParams.documentKeyPath ? configParams.documentKeyPath.trim() : '',
-    maxRows: configParams.maxRows && parseInt(configParams.maxRows) > 0 ? 
-             parseInt(configParams.maxRows) : 100
+    configMode: configParams.configMode
   };
+  
+  if (configParams.configMode === 'collection') {
+    if (!configParams.collection || configParams.collection.trim() === '') {
+      throwUserError('Collection must be specified in "Query by Collection" mode.');
+    }
+    validatedConfig.collection = configParams.collection.trim();
+    validatedConfig.maxRows = configParams.maxRows && parseInt(configParams.maxRows) > 0 ? 
+             parseInt(configParams.maxRows) : 100;
+  } else if (configParams.configMode === 'customQuery') {
+    if (!configParams.query || configParams.query.trim() === '') {
+      throwUserError('Custom query must be specified in "Use Custom Query" mode.');
+    }
+    validatedConfig.query = configParams.query.trim();
+  } else {
+    throwUserError('Invalid configuration mode selected.');
+  }
   
   Logger.log('Config validation successful');
   return validatedConfig;
@@ -490,30 +553,51 @@ function getSchema(request) {
     const apiUrl = constructApiUrl(path);
     let documentForSchemaInference;
 
-    if (configParams.documentKeyPath && configParams.documentKeyPath.trim() !== '') {
-      const docPathParts = configParams.documentKeyPath.split('/');
-      if (docPathParts.length !== 4) {
-        throwUserError('Invalid document key path. Format should be "bucket/scope/collection/documentKey"');
+    if (configParams.configMode === 'customQuery') {
+      if (!configParams.query || configParams.query.trim() === '') {
+        throwUserError('Custom query must be specified in "Use Custom Query" mode.');
       }
-      const [bucket, scope, collection, documentKey] = docPathParts;
-      const documentUrl = `${apiUrl}/v1/buckets/${bucket}/scopes/${scope}/collections/${collection}/documents/${documentKey}`;
-      Logger.log('getSchema: Retrieving specific document for schema: %s', documentUrl);
-
+      
+      const authHeader = 'Basic ' + Utilities.base64Encode(username + ':' + password);
+      const queryServiceUrl = `${apiUrl}/_p/query/query/service`;
+      
+      // For schema inference, we'll run the custom query with LIMIT 1 to get sample data
+      let userQuery = configParams.query.trim();
+      
+      // If the query already contains LIMIT, don't add another one
+      if (!userQuery.toLowerCase().includes('limit')) {
+        userQuery += ' LIMIT 1';
+      }
+      
+      Logger.log('getSchema: Running custom query for schema inference: %s', userQuery);
+      
       const fetchOptions = {
-        method: 'get',
+        method: 'post',
         contentType: 'application/json',
-        headers: { 'Authorization': 'Basic ' + Utilities.base64Encode(username + ':' + password) },
+        headers: { 'Authorization': authHeader },
+        payload: JSON.stringify({ statement: userQuery }),
         muteHttpExceptions: true,
         validateHttpsCertificates: false
       };
-      const response = UrlFetchApp.fetch(documentUrl, fetchOptions);
+      
+      const response = UrlFetchApp.fetch(queryServiceUrl, fetchOptions);
       if (response.getResponseCode() !== 200) {
-        throwUserError(`Couchbase API error (${response.getResponseCode()}): ${response.getContentText()}`);
+        throwUserError(`Couchbase Query API error (${response.getResponseCode()}): ${response.getContentText()}`);
       }
-      documentForSchemaInference = JSON.parse(response.getContentText());
-      Logger.log('getSchema: Successfully retrieved specific document for schema.');
-
-    } else if (configParams.collection && configParams.collection.trim() !== '') {
+      
+      const queryResult = JSON.parse(response.getContentText());
+      if (!queryResult.results || queryResult.results.length === 0) {
+        Logger.log('getSchema: Custom query returned no results for schema inference.');
+        return { schema: [{ name: 'empty_result', label: 'Empty Result', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}] };
+      }
+      
+      documentForSchemaInference = queryResult.results[0];
+      Logger.log('getSchema: Successfully retrieved sample document via custom query.');
+    } else if (configParams.configMode === 'collection') {
+      if (!configParams.collection || configParams.collection.trim() === '') {
+        throwUserError('Collection must be specified in "Query by Collection" mode.');
+      }
+      
       const collectionParts = configParams.collection.split('.');
       if (collectionParts.length !== 3) {
         throwUserError('Invalid collection path. Format: bucket.scope.collection');
@@ -521,9 +605,8 @@ function getSchema(request) {
       const [bucket, scope, collection] = collectionParts;
       const authHeader = 'Basic ' + Utilities.base64Encode(username + ':' + password);
       
-      // Use the collection name as an alias for RAW projection.
-      // Using direct dot notation for FROM clause as backticks were causing issues via API.
-      const statement = `SELECT RAW ${collection} FROM \`${bucket}\`.\`${scope}\`.\`${collection}\` LIMIT 1`;
+      const statement = "SELECT RAW " + collection + " FROM `" + bucket + "`.`" + scope + "`.`" + collection + "` LIMIT 1";
+      
       Logger.log('getSchema: Retrieving sample document via Query Service using executeN1qlQuery.');
       Logger.log('getSchema: Statement: %s', statement);
 
@@ -540,9 +623,8 @@ function getSchema(request) {
       }
       documentForSchemaInference = queryResults[0]; // executeN1qlQuery returns the array of results
       Logger.log('getSchema: Successfully retrieved sample document via Query Service.');
-
     } else {
-      throwUserError('Either collection or document key path must be specified for schema inference.');
+      throwUserError('Invalid configuration mode for schema inference.');
     }
     
     // Function to recursively process document fields
@@ -619,41 +701,56 @@ function getData(request) {
     const apiUrl = constructApiUrl(path);
     const requestedFieldsObject = getRequestedFields(request);
     const requestedFieldsArray = requestedFieldsObject.asArray();
-    const maxRows = parseInt(configParams.maxRows, 10) || 100;
     let documents = [];
 
-    if (configParams.documentKeyPath && configParams.documentKeyPath.trim() !== '') {
-      const docPathParts = configParams.documentKeyPath.split('/');
-      if (docPathParts.length !== 4) {
-        throwUserError('Invalid document key path. Format: bucket/scope/collection/documentKey');
+    if (configParams.configMode === 'customQuery') {
+      if (!configParams.query || configParams.query.trim() === '') {
+        throwUserError('Custom query must be specified in "Use Custom Query" mode.');
       }
-      const [bucket, scope, collection, documentKey] = docPathParts;
-      const documentUrl = `${apiUrl}/v1/buckets/${bucket}/scopes/${scope}/collections/${collection}/documents/${documentKey}`;
-      Logger.log('getData: Retrieving specific document: %s', documentUrl);
-
+      
+      const queryServiceUrl = `${apiUrl}/_p/query/query/service`;
+      let userQuery = configParams.query.trim();
+      
+      Logger.log('getData: Executing custom query: %s', userQuery);
+      
       const fetchOptions = {
-        method: 'get',
+        method: 'post',
         contentType: 'application/json',
         headers: { 'Authorization': 'Basic ' + Utilities.base64Encode(username + ':' + password) },
+        payload: JSON.stringify({ statement: userQuery }),
         muteHttpExceptions: true,
         validateHttpsCertificates: false
       };
-      const response = UrlFetchApp.fetch(documentUrl, fetchOptions);
-      if (response.getResponseCode() !== 200) {
-        throwUserError(`Couchbase API error (${response.getResponseCode()}): ${response.getContentText()}`);
-      }
-      documents.push(JSON.parse(response.getContentText()));
-      Logger.log('getData: Successfully retrieved specific document.');
+      
+      const response = UrlFetchApp.fetch(queryServiceUrl, fetchOptions);
+      const responseCode = response.getResponseCode();
+      const responseText = response.getContentText();
 
-    } else if (configParams.collection && configParams.collection.trim() !== '') {
+      if (responseCode !== 200) {
+        throwUserError(`Couchbase Query API error (${responseCode}): ${responseText}`);
+      }
+      
+      const queryResult = JSON.parse(responseText);
+      if (queryResult.results) {
+        documents = queryResult.results;
+      }
+      
+      Logger.log('getData: Successfully retrieved %s documents via custom query.', documents.length);
+    } else if (configParams.configMode === 'collection') {
+      if (!configParams.collection || configParams.collection.trim() === '') {
+        throwUserError('Collection must be specified in "Query by Collection" mode.');
+      }
+      
       const collectionParts = configParams.collection.split('.');
       if (collectionParts.length !== 3) {
         throwUserError('Invalid collection path. Format: bucket.scope.collection');
       }
       const [bucket, scope, collection] = collectionParts;
       const queryServiceUrl = `${apiUrl}/_p/query/query/service`;
-      // Use the collection name as an alias for RAW projection
-      const statement = `SELECT RAW ${collection} FROM \`${bucket}\`.\`${scope}\`.\`${collection}\` LIMIT ${maxRows}`;
+      const maxRows = parseInt(configParams.maxRows, 10) || 100;
+      
+      const statement = "SELECT RAW " + collection + " FROM `" + bucket + "`.`" + scope + "`.`" + collection + "` LIMIT " + maxRows;
+      
       Logger.log('getData: Retrieving documents via Query Service: %s', queryServiceUrl);
       Logger.log('getData: Statement: %s', statement);
 
@@ -679,7 +776,7 @@ function getData(request) {
       Logger.log('getData: Successfully retrieved %s documents via Query Service.', documents.length);
       
     } else {
-      throwUserError('Either collection or document key path must be specified.');
+      throwUserError('Invalid configuration mode specified.');
     }
 
     // Helper function to get nested values
