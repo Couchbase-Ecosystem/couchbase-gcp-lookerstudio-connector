@@ -348,10 +348,13 @@ function getConfig(request) {
       const selectedCollection = configParams.collection ? configParams.collection : null;
       if (selectedCollection) {
         isStepped = false; // Config is complete for collection mode if collection is selected
+        Logger.log('getConfig (collection mode): Collection is selected (%s), setting isStepped = false.', selectedCollection);
+      } else {
+        Logger.log('getConfig (collection mode): Collection NOT selected, isStepped = true.');
       }
       
       // Only add maxRows if config is complete for this mode
-      if (!isStepped) {
+      if (!isStepped) { // This means if isStepped is false
         config
           .newTextInput()
           .setId('maxRows')
@@ -359,6 +362,7 @@ function getConfig(request) {
           .setHelpText('Maximum number of rows to return (default: 100)')
           .setPlaceholder('100')
           .setAllowOverride(true);
+        Logger.log('getConfig (collection mode): isStepped is false, adding maxRows input.');
       }
     } else if (currentMode === 'customQuery') {
       config.newInfo()
@@ -373,11 +377,12 @@ function getConfig(request) {
         .setAllowOverride(true);
       
       isStepped = false; // Config is complete once the custom query text area is shown
+      Logger.log('getConfig (customQuery mode): Setting isStepped = false.');
     }
 
     // Set the stepped config status for the response
     config.setIsSteppedConfig(isStepped);
-    Logger.log('getConfig: Setting setIsSteppedConfig to: %s', isStepped);
+    Logger.log('getConfig: Final setIsSteppedConfig to: %s', isStepped);
 
     return config.build();
 
@@ -451,81 +456,167 @@ function validateConfig(configParams) {
 // ==========================================================================
 
 /**
- * Gets the requested fields from the request.
+ * Gets the requested fields from the request fields provided by Looker Studio,
+ * using a master schema definition for type information.
  *
- * @param {Object} request The request.
- * @return {Fields} The requested fields.
+ * @param {Array} requestFields The request.fields array from Looker Studio's getData request.
+ * @param {Array} masterSchema The complete schema definition from getSchema().
+ * @return {Fields} The Looker Studio Fields object for the response.
  */
-function getRequestedFields(request) {
+function getRequestedFields(requestFields, masterSchema) { 
   const cc = DataStudioApp.createCommunityConnector();
-  const requestedFields = cc.getFields(); // Start with an empty Fields object
-  
-  // Log the raw request fields for inspection
-  Logger.log('getRequestedFields: Raw request.fields from Looker Studio: %s', JSON.stringify(request.fields));
+  const requestedFieldsObject = cc.getFields();
 
-  // Populate the Fields object using the information provided in the request
-  request.fields.forEach(fieldInfo => {
-    // Looker Studio provides the name and the inferred type/aggregation.
-    // We need to respect this when building the Fields object for the getData response.
-    Logger.log('getRequestedFields: Adding field [%s] to response schema', fieldInfo.name);
-    
-    // Fetch the full schema first
-    const fullSchema = getSchema(request).schema; // Assuming getSchema is idempotent and fast enough
-    
-    // Find the definition for the current requested field
-    const fieldDefinition = fullSchema.find(field => field.name === fieldInfo.name);
-    
+  Logger.log('getRequestedFields: Called with masterSchema. Processing request.fields: %s', JSON.stringify(requestFields));
+
+  if (!requestFields || requestFields.length === 0) {
+    Logger.log('getRequestedFields: No specific fields in requestFields. Building response fields from masterSchema as fallback.');
+    if (masterSchema && masterSchema.length > 0) {
+        masterSchema.forEach(fieldDef => {
+            let fieldTypeEnum = cc.FieldType.TEXT;
+            if (fieldDef.dataType === 'NUMBER') fieldTypeEnum = cc.FieldType.NUMBER;
+            else if (fieldDef.dataType === 'BOOLEAN') fieldTypeEnum = cc.FieldType.BOOLEAN;
+            else if (fieldDef.dataType === 'URL') fieldTypeEnum = cc.FieldType.URL;
+
+            if (fieldDef.semantics.conceptType === 'METRIC') {
+                requestedFieldsObject.newMetric().setId(fieldDef.name).setName(fieldDef.name).setType(fieldTypeEnum);
+            } else {
+                requestedFieldsObject.newDimension().setId(fieldDef.name).setName(fieldDef.name).setType(fieldTypeEnum);
+            }
+        });
+    }
+    return requestedFieldsObject; // Return possibly populated object if masterSchema was used
+  }
+
+  requestFields.forEach(requestedFieldInfo => { // This is an item from request.fields array
+    const fieldName = requestedFieldInfo.name;
+    const fieldDefinition = masterSchema.find(f => f.name === fieldName);
+
+    let fieldTypeEnum = cc.FieldType.TEXT;
+    let conceptType = 'DIMENSION';
+
     if (fieldDefinition) {
-       Logger.log('getRequestedFields: Found definition for [%s]: Type=%s, Concept=%s', 
-                  fieldInfo.name, fieldDefinition.dataType, fieldDefinition.semantics.conceptType);
-                  
-       // Map schema string type to Apps Script FieldType enum
-       let fieldTypeEnum;
-       switch (fieldDefinition.dataType) {
-         case 'NUMBER':
-           fieldTypeEnum = cc.FieldType.NUMBER;
-           break;
-         case 'BOOLEAN':
-           fieldTypeEnum = cc.FieldType.BOOLEAN;
-           break;
-         case 'URL':
-           fieldTypeEnum = cc.FieldType.URL;
-           break;
-         case 'STRING': // Fallthrough for STRING and any other unhandled types
-         case 'TEXT':
-         case 'DATE':
-         case 'DATETIME':
-         case 'GEO':
-         default:
-           fieldTypeEnum = cc.FieldType.TEXT; // Default to TEXT
-           break;
-       }
-       
-       if (fieldDefinition.semantics.conceptType === 'METRIC') {
-         requestedFields.newMetric()
-           .setId(fieldDefinition.name)
-           .setName(fieldDefinition.name) 
-           .setType(fieldTypeEnum);
-       } else { // DIMENSION
-         requestedFields.newDimension()
-           .setId(fieldDefinition.name)
-           .setName(fieldDefinition.name)
-           .setType(fieldTypeEnum);
-       }
+      conceptType = fieldDefinition.semantics.conceptType;
+      switch (fieldDefinition.dataType) {
+        case 'NUMBER': fieldTypeEnum = cc.FieldType.NUMBER; break;
+        case 'BOOLEAN': fieldTypeEnum = cc.FieldType.BOOLEAN; break;
+        case 'URL': fieldTypeEnum = cc.FieldType.URL; break;
+        case 'STRING': 
+        default: fieldTypeEnum = cc.FieldType.TEXT; break;
+      }
+      Logger.log('getRequestedFields: Mapped %s to LookerType: %s, Concept: %s', fieldName, fieldDefinition.dataType, conceptType);
     } else {
-       // Fallback if field definition not found (should not happen ideally)
-       Logger.log('getRequestedFields: WARNING - Field definition not found for [%s] in full schema. Defaulting to TEXT Dimension.', fieldInfo.name);
-       requestedFields.newDimension()
-         .setId(fieldInfo.name)
-         .setName(fieldInfo.name)
-         .setType(cc.FieldType.TEXT);
-    } 
+      Logger.log('getRequestedFields: WARNING - Requested field %s not found in masterSchema. Defaulting to TEXT/DIMENSION.', fieldName);
+    }
+
+    if (conceptType === 'METRIC') {
+      requestedFieldsObject.newMetric().setId(fieldName).setName(fieldName).setType(fieldTypeEnum);
+    } else {
+      requestedFieldsObject.newDimension().setId(fieldName).setName(fieldName).setType(fieldTypeEnum);
+    }
   });
 
-  // Log the fields object *before* returning
-  Logger.log('getRequestedFields: Constructed Fields object for response: %s', JSON.stringify(requestedFields.asArray()));
+  Logger.log('getRequestedFields: Constructed Fields object for getData response: %s', JSON.stringify(requestedFieldsObject.asArray()));
+  return requestedFieldsObject;
+}
 
-  return requestedFields;
+/**
+ * Helper function to process the output of an INFER N1QL query.
+ *
+ * @param {Array} inferQueryResult The 'results' array from the INFER N1QL query response.
+ * @return {Array} An array of Looker Studio field definitions.
+ */
+function processInferSchemaOutput(inferQueryResult) {
+  Logger.log('processInferSchemaOutput: Received INFER results: %s', JSON.stringify(inferQueryResult));
+
+  if (!inferQueryResult || inferQueryResult.length === 0 || !inferQueryResult[0] || inferQueryResult[0].length === 0) {
+    Logger.log('processInferSchemaOutput: INFER query returned no flavors or empty result.');
+    return [{ name: 'empty_infer_result', label: 'INFER result is empty', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}];
+  }
+
+  const firstFlavor = inferQueryResult[0][0];
+
+  if (!firstFlavor || !firstFlavor.properties) {
+    Logger.log('processInferSchemaOutput: First flavor has no properties.');
+    return [{ name: 'no_properties_in_flavor', label: 'No properties in INFER result', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}];
+  }
+
+  const schemaFields = [];
+
+  function extractFieldsFromProperties(properties, prefix = '') {
+    Object.keys(properties).forEach(key => {
+      const fieldDef = properties[key];
+      const fieldName = prefix ? `${prefix}.${key}` : key;
+      let dataType = 'STRING'; 
+      let conceptType = 'DIMENSION'; 
+
+      const inferTypes = Array.isArray(fieldDef.type) ? fieldDef.type : [fieldDef.type];
+
+      if (inferTypes.includes('number') || inferTypes.includes('integer')) {
+        dataType = 'NUMBER';
+        conceptType = 'METRIC';
+      } else if (inferTypes.includes('boolean')) {
+        dataType = 'BOOLEAN';
+      } else if (inferTypes.includes('string')) {
+        // Check for URL, but be cautious with empty string samples
+        let isPotentiallyUrl = false;
+        let hasNonEmptyUrlSample = false;
+        let hasEmptyStringSample = false;
+
+        if (fieldDef.samples && fieldDef.samples.length > 0) {
+          fieldDef.samples.forEach(sample => {
+            if (typeof sample === 'string') {
+              if (sample.startsWith('http://') || sample.startsWith('https://')) {
+                isPotentiallyUrl = true;
+                hasNonEmptyUrlSample = true;
+              } else if (sample === '') {
+                hasEmptyStringSample = true;
+              }
+            }
+          });
+        }
+        
+        // If it looks like a URL field but contains empty strings, treat as STRING to be safe.
+        // Only treat as URL if at least one sample is a valid-looking URL and no empty strings are present,
+        // or if all string samples are valid URLs.
+        // More robust: if it contains http(s):// AND empty strings, it's safer to make it STRING.
+        // If it contains http(s):// and NO empty strings, it can be URL.
+        if (isPotentiallyUrl && hasNonEmptyUrlSample) {
+            if (hasEmptyStringSample) {
+                Logger.log('processInferSchemaOutput: Field [%s] has URL-like samples and empty strings. Defaulting to STRING.', fieldName);
+                dataType = 'STRING';
+            } else {
+                dataType = 'URL';
+            }
+        } else {
+            dataType = 'STRING';
+        }
+
+      } else if (inferTypes.includes('object') && fieldDef.properties) {
+        extractFieldsFromProperties(fieldDef.properties, fieldName);
+        return; 
+      } else if (inferTypes.includes('array')) {
+        dataType = 'STRING';
+      }
+      
+      schemaFields.push({
+        name: fieldName,
+        label: fieldName, 
+        dataType: dataType,
+        semantics: { conceptType: conceptType }
+      });
+    });
+  }
+
+  extractFieldsFromProperties(firstFlavor.properties);
+  
+  if (schemaFields.length === 0) {
+      Logger.log('processInferSchemaOutput: Warning: Schema inference from INFER resulted in zero fields.');
+      return [{ name: 'empty_infer_properties', label: 'INFER properties empty', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}];
+  }
+
+  Logger.log('processInferSchemaOutput: Final schema fields from INFER: %s', JSON.stringify(schemaFields));
+  return schemaFields;
 }
 
 /**
@@ -551,26 +642,27 @@ function getSchema(request) {
     
     const configParams = request.configParams || {};
     const apiUrl = constructApiUrl(path);
-    let documentForSchemaInference;
+    const authHeader = 'Basic ' + Utilities.base64Encode(username + ':' + password);
+    let inferResults;
 
     if (configParams.configMode === 'customQuery') {
       if (!configParams.query || configParams.query.trim() === '') {
         throwUserError('Custom query must be specified in "Use Custom Query" mode.');
       }
       
-      const authHeader = 'Basic ' + Utilities.base64Encode(username + ':' + password);
-      const queryServiceUrl = `${apiUrl}/_p/query/query/service`;
+      // For custom queries, we still fetch one document to infer schema.
+      // Using INFER on an arbitrary N1QL query result is not directly supported by INFER.
+      // INFER works on keyspaces. So, the old method of SELECT LIMIT 1 is more appropriate here.
+      // Or, we could require the user to also specify a keyspace if they want INFER on custom query.
+      // For now, let's keep the existing logic for customQuery for schema inference.
       
-      // For schema inference, we'll run the custom query with LIMIT 1 to get sample data
       let userQuery = configParams.query.trim();
-      
-      // If the query already contains LIMIT, don't add another one
       if (!userQuery.toLowerCase().includes('limit')) {
         userQuery += ' LIMIT 1';
       }
+      Logger.log('getSchema (customQuery): Running custom query for schema inference: %s', userQuery);
       
-      Logger.log('getSchema: Running custom query for schema inference: %s', userQuery);
-      
+      const queryServiceUrl = `${apiUrl}/_p/query/query/service`;
       const fetchOptions = {
         method: 'post',
         contentType: 'application/json',
@@ -582,17 +674,64 @@ function getSchema(request) {
       
       const response = UrlFetchApp.fetch(queryServiceUrl, fetchOptions);
       if (response.getResponseCode() !== 200) {
-        throwUserError(`Couchbase Query API error (${response.getResponseCode()}): ${response.getContentText()}`);
+        throwUserError(`Couchbase Query API error for custom query schema (${response.getResponseCode()}): ${response.getContentText()}`);
       }
       
       const queryResult = JSON.parse(response.getContentText());
       if (!queryResult.results || queryResult.results.length === 0) {
-        Logger.log('getSchema: Custom query returned no results for schema inference.');
-        return { schema: [{ name: 'empty_result', label: 'Empty Result', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}] };
+        Logger.log('getSchema (customQuery): Custom query returned no results for schema inference.');
+        return { schema: [{ name: 'empty_custom_query_result', label: 'Empty Custom Query Result', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}] };
       }
       
-      documentForSchemaInference = queryResult.results[0];
-      Logger.log('getSchema: Successfully retrieved sample document via custom query.');
+      // Manually process the single document for schema (old way for custom queries)
+      const documentForSchemaInference = queryResult.results[0];
+      Logger.log('getSchema (customQuery): Successfully retrieved sample document via custom query.');
+      
+      // --- Reusing the old processFields for custom query mode ---
+      function processFieldsForCustomQuery(obj, prefix = '') { // Renamed to avoid conflict
+        const fields = [];
+        if (!obj || typeof obj !== 'object') return fields;
+        Object.keys(obj).forEach(key => {
+          const fieldName = prefix ? `${prefix}.${key}` : key;
+          const value = obj[key];
+          let dataType = 'STRING';
+          let conceptType = 'DIMENSION';
+          if (value === null || value === undefined) {
+            dataType = 'STRING';
+          } else if (typeof value === 'number') {
+            dataType = 'NUMBER';
+            conceptType = 'METRIC';
+          } else if (typeof value === 'boolean') {
+            dataType = 'BOOLEAN';
+          } else if (typeof value === 'string') {
+            if (value.startsWith('http://') || value.startsWith('https://')) {
+              dataType = 'URL';
+            }
+          } else if (Array.isArray(value)) {
+            dataType = 'STRING'; 
+          } else if (typeof value === 'object') {
+            fields.push(...processFieldsForCustomQuery(value, fieldName));
+            return; 
+          }
+          fields.push({
+            name: fieldName,
+            label: fieldName,
+            dataType: dataType,
+            semantics: { conceptType: conceptType }
+          });
+        });
+        return fields;
+      }
+      const schemaFields = processFieldsForCustomQuery(documentForSchemaInference);
+      // --- End of old processFields for custom query mode ---
+
+      if (schemaFields.length === 0) {
+        Logger.log('Warning: Schema inference for custom query resulted in zero fields.');
+        return { schema: [{ name: 'empty_custom_query_schema', label: 'Empty Custom Query Schema', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}] };
+      }
+      Logger.log('getSchema (customQuery): Final inferred schema: %s', JSON.stringify(schemaFields));
+      return { schema: schemaFields };
+
     } else if (configParams.configMode === 'collection') {
       if (!configParams.collection || configParams.collection.trim() === '') {
         throwUserError('Collection must be specified in "Query by Collection" mode.');
@@ -602,77 +741,37 @@ function getSchema(request) {
       if (collectionParts.length !== 3) {
         throwUserError('Invalid collection path. Format: bucket.scope.collection');
       }
-      const [bucket, scope, collection] = collectionParts;
-      const authHeader = 'Basic ' + Utilities.base64Encode(username + ':' + password);
+      // These are the raw parts, e.g., "travel-sample", "inventory", "landmark"
+      const rawBucket = collectionParts[0];
+      const rawScope = collectionParts[1];
+      const rawCollection = collectionParts[2];
       
-      const statement = "SELECT RAW " + collection + " FROM `" + bucket + "`.`" + scope + "`.`" + collection + "` LIMIT 1";
+      // For INFER statement, keyspace path needs backticks
+      const keyspacePathForInfer = `\`${rawBucket}\`.\`${rawScope}\`.\`${rawCollection}\``;
+      const inferWithOptions = `WITH {\"sample_size\": 100, \"num_sample_values\": 3, \"similarity_metric\": 0.6}`;
+      const actualInferStatement = `INFER ${keyspacePathForInfer} ${inferWithOptions}`;
       
-      Logger.log('getSchema: Retrieving sample document via Query Service using executeN1qlQuery.');
-      Logger.log('getSchema: Statement: %s', statement);
+      Logger.log('getSchema (collectionMode): Retrieving schema via INFER statement.');
+      Logger.log('getSchema (collectionMode): Statement (intended): %s', actualInferStatement);
 
-      const queryResults = executeN1qlQuery(apiUrl, authHeader, statement);
+      // Ensure inferResults is assigned the result of executing the *actualInferStatement*
+      inferResults = executeN1qlQuery(apiUrl, authHeader, actualInferStatement);
 
-      if (queryResults === null) {
-        // executeN1qlQuery already logs details, so we can throw a more specific error here.
-        throwUserError('Failed to retrieve sample document for schema. Check logs for query error details.');
+      if (inferResults === null) {
+        throwUserError('Failed to execute INFER query. Check logs for N1QL error details.');
       }
-      if (queryResults.length === 0) {
-        Logger.log('No documents returned from query for schema inference.');
-        // Return a schema with a placeholder if the collection is empty
-        return { schema: [{ name: 'empty_collection', label: 'Collection is Empty or No Documents Found', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}] };
-      }
-      documentForSchemaInference = queryResults[0]; // executeN1qlQuery returns the array of results
-      Logger.log('getSchema: Successfully retrieved sample document via Query Service.');
+      // executeN1qlQuery returns the 'results' array from the JSON response.
+      // For INFER, this 'results' array itself contains the schema structure.
+      // Specifically, results: [ [ flavor1, flavor2, ... ] ]
+
+      const schemaFields = processInferSchemaOutput(inferResults);
+      Logger.log('getSchema (collectionMode): Final schema from INFER: %s', JSON.stringify(schemaFields));
+      return { schema: schemaFields };
+
     } else {
       throwUserError('Invalid configuration mode for schema inference.');
     }
     
-    // Function to recursively process document fields
-    function processFields(obj, prefix = '') {
-      const fields = [];
-      if (!obj || typeof obj !== 'object') return fields;
-      Object.keys(obj).forEach(key => {
-        const fieldName = prefix ? `${prefix}.${key}` : key;
-        const value = obj[key];
-        let dataType = 'STRING';
-        let conceptType = 'DIMENSION';
-        if (value === null || value === undefined) {
-          dataType = 'STRING';
-        } else if (typeof value === 'number') {
-          dataType = 'NUMBER';
-          conceptType = 'METRIC';
-        } else if (typeof value === 'boolean') {
-          dataType = 'BOOLEAN';
-        } else if (typeof value === 'string') {
-          if (value.startsWith('http://') || value.startsWith('https://')) {
-            dataType = 'URL';
-          }
-        } else if (Array.isArray(value)) {
-          // Represent arrays as STRING for simplicity in Looker Studio
-          dataType = 'STRING'; 
-        } else if (typeof value === 'object') {
-          // For nested objects, recursively add their fields
-          fields.push(...processFields(value, fieldName));
-          return; // Skip adding the parent object itself as a field
-        }
-        fields.push({
-          name: fieldName,
-          label: fieldName,
-          dataType: dataType,
-          semantics: { conceptType: conceptType }
-        });
-      });
-      return fields;
-    }
-
-    const schemaFields = processFields(documentForSchemaInference);
-    if (schemaFields.length === 0) {
-      Logger.log('Warning: Schema inference resulted in zero fields.');
-      return { schema: [{ name: 'empty_result', label: 'Empty Result', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}] };
-    }
-    Logger.log('getSchema: Final inferred schema: %s', JSON.stringify(schemaFields));
-    return { schema: schemaFields };
-
   } catch (e) {
     Logger.log('Error in getSchema: %s. Stack: %s', e.message, e.stack);
     throwUserError(`Error inferring schema: ${e.message}`);
@@ -699,97 +798,80 @@ function getData(request) {
 
     const configParams = request.configParams || {};
     const apiUrl = constructApiUrl(path);
-    const requestedFieldsObject = getRequestedFields(request);
-    const requestedFieldsArray = requestedFieldsObject.asArray();
+
+    // Call getSchema ONCE to get the master schema definition
+    const masterSchema = getSchema(request).schema; 
+    if (!masterSchema || masterSchema.length === 0) {
+        throwUserError('Failed to obtain a valid master schema for getData.');
+    }
+    Logger.log('getData: Obtained masterSchema with %s fields.', masterSchema.length);
+
+    // Get the Fields object for the fields Looker Studio is actually requesting for this getData call
+    const requestedFieldsObject = getRequestedFields(request.fields, masterSchema); 
+    // build() returns the array of fields {name, label, dataType, semantics} for the response schema
+    const schemaForResponse = requestedFieldsObject.build(); 
+
     let documents = [];
+    const authHeader = 'Basic ' + Utilities.base64Encode(username + ':' + password);
 
-    if (configParams.configMode === 'customQuery') {
-      if (!configParams.query || configParams.query.trim() === '') {
-        throwUserError('Custom query must be specified in "Use Custom Query" mode.');
-      }
-      
-      const queryServiceUrl = `${apiUrl}/_p/query/query/service`;
-      let userQuery = configParams.query.trim();
-      
-      Logger.log('getData: Executing custom query: %s', userQuery);
-      
-      const fetchOptions = {
-        method: 'post',
-        contentType: 'application/json',
-        headers: { 'Authorization': 'Basic ' + Utilities.base64Encode(username + ':' + password) },
-        payload: JSON.stringify({ statement: userQuery }),
-        muteHttpExceptions: true,
-        validateHttpsCertificates: false
-      };
-      
-      const response = UrlFetchApp.fetch(queryServiceUrl, fetchOptions);
-      const responseCode = response.getResponseCode();
-      const responseText = response.getContentText();
+    if (configParams.configMode === 'collection') {
+        if (!configParams.collection || configParams.collection.trim() === '') {
+            throwUserError('Collection must be specified in "Query by Collection" mode.');
+        }
+        const collectionParts = configParams.collection.split('.');
+        if (collectionParts.length !== 3) {
+            throwUserError('Invalid collection path. Format: bucket.scope.collection');
+        }
+        
+        // Define variables for each part of the keyspace path, with backticks
+        const bucketName = `\`${collectionParts[0]}\``;     // e.g., `travel-sample`
+        const scopeName = `\`${collectionParts[1]}\``;        // e.g., `inventory`
+        const collectionName = `\`${collectionParts[2]}\``; // e.g., `hotel` or `landmark`
+        
+        const maxRows = parseInt(configParams.maxRows, 10) || 100;
+              
+        const statement = `SELECT RAW ${collectionName} FROM ${bucketName}.${scopeName}.${collectionName} LIMIT ${maxRows}`;
+        
+        Logger.log('getData (collectionMode): Retrieving documents. Statement: %s', statement);
+        const queryResults = executeN1qlQuery(apiUrl, authHeader, statement);
 
-      if (responseCode !== 200) {
-        throwUserError(`Couchbase Query API error (${responseCode}): ${responseText}`);
-      }
-      
-      const queryResult = JSON.parse(responseText);
-      if (queryResult.results) {
-        documents = queryResult.results;
-      }
-      
-      Logger.log('getData: Successfully retrieved %s documents via custom query.', documents.length);
-    } else if (configParams.configMode === 'collection') {
-      if (!configParams.collection || configParams.collection.trim() === '') {
-        throwUserError('Collection must be specified in "Query by Collection" mode.');
-      }
-      
-      const collectionParts = configParams.collection.split('.');
-      if (collectionParts.length !== 3) {
-        throwUserError('Invalid collection path. Format: bucket.scope.collection');
-      }
-      const [bucket, scope, collection] = collectionParts;
-      const queryServiceUrl = `${apiUrl}/_p/query/query/service`;
-      const maxRows = parseInt(configParams.maxRows, 10) || 100;
-      
-      const statement = "SELECT RAW " + collection + " FROM `" + bucket + "`.`" + scope + "`.`" + collection + "` LIMIT " + maxRows;
-      
-      Logger.log('getData: Retrieving documents via Query Service: %s', queryServiceUrl);
-      Logger.log('getData: Statement: %s', statement);
+        if (queryResults === null) {
+            throwUserError('Failed to retrieve documents for getData. Check logs for query error details.');
+        }
+        documents = queryResults; 
+        Logger.log('getData (collectionMode): Successfully retrieved %s documents.', documents.length);
 
-      const fetchOptions = {
-        method: 'post',
-        contentType: 'application/json',
-        headers: { 'Authorization': 'Basic ' + Utilities.base64Encode(username + ':' + password) },
-        payload: JSON.stringify({ statement: statement }),
-        muteHttpExceptions: true,
-        validateHttpsCertificates: false
-      };
-      const response = UrlFetchApp.fetch(queryServiceUrl, fetchOptions);
-      const responseCode = response.getResponseCode();
-      const responseText = response.getContentText();
-
-      if (responseCode !== 200) {
-        throwUserError(`Couchbase Query API error (${responseCode}): ${responseText}`);
-      }
-      const queryResult = JSON.parse(responseText);
-      if (queryResult.results) {
-        documents = queryResult.results; // SELECT RAW returns an array of documents
-      }
-      Logger.log('getData: Successfully retrieved %s documents via Query Service.', documents.length);
-      
+    } else if (configParams.configMode === 'customQuery') {
+        if (!configParams.query || configParams.query.trim() === '') {
+            throwUserError('Custom query must be specified in "Use Custom Query" mode.');
+        }
+        let userQuery = configParams.query.trim(); 
+        // Note: LIMIT for custom queries should ideally be part of the query itself for predictability.
+        // Appending a default LIMIT here if not present might alter user's intended query.
+        // Consider advising users to include LIMIT in custom queries.
+        Logger.log('getData (customQueryMode): Executing custom query: %s', userQuery);
+        const queryResults = executeN1qlQuery(apiUrl, authHeader, userQuery);
+        if (queryResults === null) {
+            throwUserError('Failed to retrieve documents for custom query. Check logs for N1QL error details.');
+        }
+        documents = queryResults;
+        Logger.log('getData (customQueryMode): Successfully retrieved %s documents.', documents.length);
     } else {
-      throwUserError('Invalid configuration mode specified.');
+      throwUserError('Invalid configuration mode specified for getData.');
     }
 
-    // Helper function to get nested values
-    function getNestedValue(obj, path) {
-      const parts = path.replace(/[(\d+)]/g, '.$1').split('.');
+    function getNestedValue(obj, pathString) { 
+      const parts = pathString.replace(/[\[(\d+)\]]/g, '.$1').split('.');
       let current = obj;
       for (let i = 0; i < parts.length; i++) {
         if (current === null || current === undefined) return null;
         const key = parts[i];
-        if (!isNaN(key) && Array.isArray(current)) {
+        if (!isNaN(key) && Array.isArray(current)) { 
           current = parseInt(key, 10) < current.length ? current[parseInt(key, 10)] : null;
-        } else {
+        } else if (typeof current === 'object' && current !== null) { // Ensure current is an object and not null
           current = current[key];
+        } else {
+          return null; 
         }
       }
       return current;
@@ -797,18 +879,26 @@ function getData(request) {
 
     const rows = documents.map(doc => {
       const values = [];
-      requestedFieldsArray.forEach(field => {
-        const fieldName = field.getId();
-        const fieldType = field.getType(); // From schema
+      // Iterate over schemaForResponse, which is the array of plain field definition objects
+      // from requestedFieldsObject.build()
+      schemaForResponse.forEach(fieldDefinition => { 
+        const fieldName = fieldDefinition.name; // Get the name from the plain object
+        
+        // Find the field's definition from our masterSchema to know its true dataType
+        // (masterFieldDefinition was already used to build schemaForResponse, 
+        //  so fieldDefinition itself contains the necessary dataType and semantics)
+        const lookerDataType = fieldDefinition.dataType; // Use dataType from our built schemaForResponse
+
         let value = getNestedValue(doc, fieldName);
         let formattedValue = null;
+
         if (value !== null && value !== undefined) {
-          switch (fieldType) {
-            case DataStudioApp.createCommunityConnector().FieldType.NUMBER:
+          switch (lookerDataType) { 
+            case 'NUMBER':
               formattedValue = Number(value);
               if (isNaN(formattedValue)) formattedValue = null;
               break;
-            case DataStudioApp.createCommunityConnector().FieldType.BOOLEAN:
+            case 'BOOLEAN':
               if (typeof value === 'string') {
                 const lower = value.toLowerCase();
                 formattedValue = lower === 'true' ? true : (lower === 'false' ? false : null);
@@ -816,12 +906,16 @@ function getData(request) {
                 formattedValue = Boolean(value);
               }
               break;
-            default: // STRING, URL, TEXT etc.
+            case 'URL': 
+                 formattedValue = String(value);
+                 break;
+            case 'STRING': 
+            default:
               formattedValue = (typeof value === 'object') ? JSON.stringify(value) : String(value);
               break;
           }
         } else {
-          formattedValue = ''; // Default for null/undefined as per original logic
+          formattedValue = null; 
         }
         values.push(formattedValue);
       });
@@ -829,14 +923,16 @@ function getData(request) {
     });
 
     Logger.log('getData: Final rows sample (first %s): %s', Math.min(3, rows.length), JSON.stringify(rows.slice(0, 3)));
+    
     return {
-      schema: requestedFieldsObject.build(),
+      schema: schemaForResponse, 
       rows: rows
     };
 
   } catch (e) {
     Logger.log('Error in getData: %s. Stack: %s', e.message, e.stack);
-    throwUserError(`Error retrieving data: ${e.message}`);
+    const errorMessage = typeof e.getText === 'function' ? e.getText() : e.message;
+    throwUserError(`Error retrieving data: ${errorMessage}`);
   }
 }
 

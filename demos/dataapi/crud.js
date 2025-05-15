@@ -97,105 +97,109 @@ async function listDocuments(limit = 10) {
 /**
  * Infer schema from a collection by sampling documents
  */
-async function inferSchema(sampleSize = 10) {
+async function inferSchema(sampleSize = 10, numSampleValues = 3) {
+  const queryServiceUrl = `https://${config.endpoint}/_p/query/query/service`;
+  // Construct the INFER N1QL statement
+  // Ensure bucket, scope, and collection names are properly backticked for N1QL
+  const keyspacePath = `\`${config.bucket}\`.\`${config.scope}\`.\`${config.collection}\``;
+  const inferStatement = `INFER ${keyspacePath} WITH {\"sample_size\": ${sampleSize}, \"num_sample_values\": ${numSampleValues}, \"similarity_metric\": 0.1}`;
+
+  console.log(`Inferring schema via Query Service: ${queryServiceUrl}`);
+  console.log(`Statement: ${inferStatement}`);
+  
   try {
-    // Get sample documents
-    // listDocuments now returns an array of documents directly thanks to SELECT RAW
-    const documents = await listDocuments(sampleSize);
-    
-    if (!documents || documents.length === 0) {
-      throw new Error('No documents found to infer schema');
+    const response = await fetch(queryServiceUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${encodeCredentials(config.username, config.password)}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ statement: inferStatement })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API request for INFER failed with status ${response.status}: ${errorText}`);
     }
+
+    const inferApiResult = await response.json();
     
-    console.log(`Inferring schema from ${documents.length} documents`);
-    
-    // Create a schema map to track field types
-    const schemaMap = {};
-    
-    // Function to recursively process fields and build schema
-    function processFields(obj, prefix = '') {
-      if (!obj || typeof obj !== 'object') {
-        return;
-      }
-      
-      Object.keys(obj).forEach(key => {
+    // Check if results are present and have the expected structure
+    if (!inferApiResult.results || inferApiResult.results.length === 0 || !inferApiResult.results[0] || inferApiResult.results[0].length === 0) {
+      console.error('INFER query returned no flavors or empty result:', JSON.stringify(inferApiResult));
+      throw new Error('INFER query returned no flavors or an empty result structure.');
+    }
+
+    // The INFER output is an array of "flavors" (schemas). We process the first flavor.
+    // Structure: results: [ [ flavor1, flavor2, ... ] ], so results[0] is the array of flavors.
+    const firstFlavor = inferApiResult.results[0][0];
+
+    if (!firstFlavor || !firstFlavor.properties) {
+      console.error('First flavor in INFER result has no properties:', JSON.stringify(firstFlavor));
+      throw new Error('First flavor in INFER result is missing properties.');
+    }
+
+    console.log(`Successfully fetched INFER schema, processing first flavor with ${Object.keys(firstFlavor.properties).length} top-level properties.`);
+
+    const lookerSchema = [];
+
+    function parseInferProperties(properties, prefix = '') {
+      Object.keys(properties).forEach(key => {
+        const fieldDef = properties[key];
         const fieldName = prefix ? `${prefix}.${key}` : key;
-        const value = obj[key];
-        
-        if (!(fieldName in schemaMap)) {
-          // Initialize field info
-          schemaMap[fieldName] = {
-            name: fieldName,
-            types: new Set(),
-            isMetric: false
-          };
-        }
-        
-        // Track the type of this value
-        if (value === null || value === undefined) {
-          schemaMap[fieldName].types.add('null');
-        } else if (typeof value === 'number') {
-          schemaMap[fieldName].types.add('number');
-          schemaMap[fieldName].isMetric = true;
-        } else if (typeof value === 'boolean') {
-          schemaMap[fieldName].types.add('boolean');
-        } else if (typeof value === 'string') {
-          if (value.startsWith('http://') || value.startsWith('https://')) {
-            schemaMap[fieldName].types.add('url');
-          } else {
-            schemaMap[fieldName].types.add('string');
+        let dataType = 'STRING'; // Default Looker Studio type
+        let isMetric = false; // Default semantics
+
+        const inferTypes = Array.isArray(fieldDef.type) ? fieldDef.type : [fieldDef.type];
+
+        if (inferTypes.includes('number') || inferTypes.includes('integer')) {
+          dataType = 'NUMBER';
+          isMetric = true;
+        } else if (inferTypes.includes('boolean')) {
+          dataType = 'BOOLEAN';
+        } else if (inferTypes.includes('string')) {
+          // Check samples for URL pattern
+          if (fieldDef.samples && fieldDef.samples.length > 0 && typeof fieldDef.samples[0] === 'string') {
+            if (fieldDef.samples[0].startsWith('http://') || fieldDef.samples[0].startsWith('https://')) {
+              dataType = 'URL';
+            }
           }
-        } else if (Array.isArray(value)) {
-          schemaMap[fieldName].types.add('array');
-          
-          // Process array items if they are objects
-          if (value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
-            value.forEach((item, index) => {
-              // Avoid excessively deep recursion for arrays of objects in schema
-              // Represent as a general array type for Looker Studio
-            });
-          }
-        } else if (typeof value === 'object') {
-          schemaMap[fieldName].types.add('object');
-          // Recursively process nested objects
-          processFields(value, fieldName);
+          // Default to STRING if not URL
+        } 
+        // Handle object and array types from INFER
+        else if (inferTypes.includes('object') && fieldDef.properties) {
+          // Recursively parse nested properties
+          parseInferProperties(fieldDef.properties, fieldName);
+          return; // Skip adding the parent object itself as a field in Looker schema
+        } else if (inferTypes.includes('array')) {
+          // Arrays are generally represented as STRING in Looker Studio
+          // Could inspect fieldDef.items for more detail if needed for specific cases
+          dataType = 'STRING'; 
         }
+        // 'null' type usually appears with other types; if standalone, defaults to STRING
+
+        lookerSchema.push({
+          name: fieldName,
+          label: fieldName, // Using fieldName as label
+          dataType: dataType,
+          semantics: {
+            conceptType: isMetric ? 'METRIC' : 'DIMENSION'
+          }
+        });
       });
     }
+
+    parseInferProperties(firstFlavor.properties);
     
-    // Process all documents to build schema
-    documents.forEach(doc => {
-      processFields(doc);
-    });
-    
-    // Convert schema map to array and determine final types
-    const schema = Object.values(schemaMap).map(field => {
-      const typeArray = Array.from(field.types);
-      let dataType;
-      if (typeArray.includes('number')) {
-        dataType = 'NUMBER';
-      } else if (typeArray.includes('boolean')) {
-        dataType = 'BOOLEAN';
-      } else if (typeArray.includes('url')) {
-        dataType = 'URL';
-      } else {
-        dataType = 'STRING';
-      }
-      
-      return {
-        name: field.name,
-        label: field.name,
-        dataType: dataType,
-        semantics: {
-          conceptType: field.isMetric ? 'METRIC' : 'DIMENSION'
-        }
-      };
-    });
-    
-    console.log('Inferred schema:', JSON.stringify(schema, null, 2));
-    return schema;
+    if (lookerSchema.length === 0) {
+        console.warn('Schema inference from INFER resulted in an empty Looker schema.');
+    }
+
+    console.log('Inferred schema (Looker format):', JSON.stringify(lookerSchema, null, 2));
+    return lookerSchema;
+
   } catch (error) {
-    console.error('Error inferring schema:', error);
+    console.error('Error in inferSchema function:', error);
     throw error;
   }
 }
