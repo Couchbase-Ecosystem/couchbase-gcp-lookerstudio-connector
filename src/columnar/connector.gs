@@ -150,7 +150,7 @@ function resetAuth() {
 // ==========================================================================
 
 /**
- * Fetches available buckets, scopes, and collections from Couchbase.
+ * Fetches available databases, scopes, and collections from Couchbase.
  * Used to populate dropdowns in the config UI.
  */
 function fetchCouchbaseMetadata() {
@@ -165,7 +165,7 @@ function fetchCouchbaseMetadata() {
   if (!path || !username || !password) {
     Logger.log('fetchCouchbaseMetadata: Authentication credentials missing from storage.');
     return {
-      buckets: [],
+      databases: [],
       scopesCollections: {}
     };
   }
@@ -187,7 +187,7 @@ function fetchCouchbaseMetadata() {
   };
   
   // Initialize empty result structure
-  let bucketNames = [];
+  let databaseNames = [];
   const scopesCollections = {};
   
   try {
@@ -218,7 +218,7 @@ function fetchCouchbaseMetadata() {
       // Use System.Metadata approach
       Logger.log('fetchCouchbaseMetadata: Using System.Metadata approach');
       
-      // Get databases (buckets)
+      // Get databases (databases)
       const databaseQueryPayload = {
         statement: "SELECT DISTINCT DatabaseName FROM System.Metadata.`Dataset`",
         timeout: "10000ms"
@@ -232,15 +232,15 @@ function fetchCouchbaseMetadata() {
         const databaseData = JSON.parse(databaseResponse.getContentText());
         
         if (databaseData.results && Array.isArray(databaseData.results)) {
-          bucketNames = databaseData.results
+          databaseNames = databaseData.results
             .filter(item => item.DatabaseName && item.DatabaseName !== 'System') // Filter out System database
             .map(item => item.DatabaseName);
           
-          Logger.log('fetchCouchbaseMetadata: Found databases/buckets: %s', bucketNames.join(', '));
+          Logger.log('fetchCouchbaseMetadata: Found databases/databases: %s', databaseNames.join(', '));
         }
       }
       
-      // Get all collections and their scope/bucket info
+      // Get all collections and their scope/database info
       const collectionsQueryPayload = {
         statement: "SELECT DatabaseName, DataverseName, DatasetName FROM System.Metadata.`Dataset` WHERE DatabaseName != 'System'",
         timeout: "10000ms"
@@ -256,33 +256,33 @@ function fetchCouchbaseMetadata() {
         if (collectionsData.results && Array.isArray(collectionsData.results)) {
           Logger.log('fetchCouchbaseMetadata: Found %s collections in metadata', collectionsData.results.length);
           
-          // Initialize bucket structures
-          bucketNames.forEach(bucket => {
-            scopesCollections[bucket] = {};
+          // Initialize database structures
+          databaseNames.forEach(database => {
+            scopesCollections[database] = {};
           });
           
           // Process collections data
           collectionsData.results.forEach(item => {
             if (item.DatabaseName && item.DataverseName && item.DatasetName) {
-              const bucket = item.DatabaseName;
+              const database = item.DatabaseName;
               const scope = item.DataverseName;
               const collection = item.DatasetName;
               
-              // Skip non-matching buckets
-              if (!bucketNames.includes(bucket)) {
+              // Skip non-matching databases
+              if (!databaseNames.includes(database)) {
                 return;
               }
               
               // Initialize scope if not exists
-              if (!scopesCollections[bucket][scope]) {
-                scopesCollections[bucket][scope] = [];
+              if (!scopesCollections[database][scope]) {
+                scopesCollections[database][scope] = [];
               }
               
               // Add collection if not already added
-              if (!scopesCollections[bucket][scope].includes(collection)) {
-                scopesCollections[bucket][scope].push(collection);
+              if (!scopesCollections[database][scope].includes(collection)) {
+                scopesCollections[database][scope].push(collection);
                 Logger.log('fetchCouchbaseMetadata: Added: %s.%s.%s', 
-                          bucket, scope, collection);
+                          database, scope, collection);
               }
             }
           });
@@ -293,32 +293,32 @@ function fetchCouchbaseMetadata() {
       Logger.log('fetchCouchbaseMetadata: System.Metadata is not accessible, using legacy approach');
       
       // For Columnar, we need to query system:keyspaces directly
-      const bucketQueryPayload = {
-        statement: "SELECT DISTINCT SPLIT_PART(keyspace_id, ':', 1) AS bucket FROM system:keyspaces WHERE SPLIT_PART(keyspace_id, ':', 1) != 'system';",
+      const databaseQueryPayload = {
+        statement: "SELECT DISTINCT SPLIT_PART(keyspace_id, ':', 1) AS database FROM system:keyspaces WHERE SPLIT_PART(keyspace_id, ':', 1) != 'system';",
         timeout: "10000ms"
       };
       
-      // First get all buckets
-      options.payload = JSON.stringify(bucketQueryPayload);
-      Logger.log('fetchCouchbaseMetadata: Querying for buckets (legacy)');
+      // First get all databases
+      options.payload = JSON.stringify(databaseQueryPayload);
+      Logger.log('fetchCouchbaseMetadata: Querying for databases (legacy)');
       
-      const bucketResponse = UrlFetchApp.fetch(queryUrl, options);
+      const databaseResponse = UrlFetchApp.fetch(queryUrl, options);
       
-      if (bucketResponse.getResponseCode() === 200) {
-        const bucketData = JSON.parse(bucketResponse.getContentText());
+      if (databaseResponse.getResponseCode() === 200) {
+        const databaseData = JSON.parse(databaseResponse.getContentText());
         
-        if (bucketData.results && Array.isArray(bucketData.results)) {
-          bucketNames = bucketData.results
-            .filter(item => item.bucket) // Filter out any null or undefined
-            .map(item => item.bucket);
+        if (databaseData.results && Array.isArray(databaseData.results)) {
+          databaseNames = databaseData.results
+            .filter(item => item.database) // Filter out any null or undefined
+            .map(item => item.database);
           
-          Logger.log('fetchCouchbaseMetadata: Found buckets: %s', bucketNames.join(', '));
+          Logger.log('fetchCouchbaseMetadata: Found databases: %s', databaseNames.join(', '));
         } else {
-          Logger.log('fetchCouchbaseMetadata: Bucket query result format unexpected or empty.');
+          Logger.log('fetchCouchbaseMetadata: Database query result format unexpected or empty.');
         }
       } else {
-        Logger.log('Error fetching buckets. Code: %s, Response: %s', 
-                  bucketResponse.getResponseCode(), bucketResponse.getContentText());
+        Logger.log('Error fetching databases. Code: %s, Response: %s', 
+                  databaseResponse.getResponseCode(), databaseResponse.getContentText());
       }
       
       // Now get all keyspaces
@@ -336,9 +336,9 @@ function fetchCouchbaseMetadata() {
         const keyspaceData = JSON.parse(keyspaceResponse.getContentText());
         Logger.log('fetchCouchbaseMetadata: Keyspace response received');
         
-        // Initialize bucket structures
-        bucketNames.forEach(bucket => {
-          scopesCollections[bucket] = {};
+        // Initialize database structures
+        databaseNames.forEach(database => {
+          scopesCollections[database] = {};
         });
         
         if (keyspaceData.results && Array.isArray(keyspaceData.results)) {
@@ -346,15 +346,15 @@ function fetchCouchbaseMetadata() {
             if (item.keyspace_id) {
               const keyspaceParts = item.keyspace_id.split(':');
               if (keyspaceParts.length >= 2) {
-                const bucket = keyspaceParts[0];
+                const database = keyspaceParts[0];
                 
-                // Skip non-matching buckets
-                if (!bucketNames.includes(bucket)) {
+                // Skip non-matching databases
+                if (!databaseNames.includes(database)) {
                   return;
                 }
                 
                 // Parse scope and collection from keyspace_id
-                // Format is typically bucket:scope.collection
+                // Format is typically database:scope.collection
                 const scopeCollectionParts = keyspaceParts[1].split('.');
                 let scope, collection;
                 
@@ -368,15 +368,15 @@ function fetchCouchbaseMetadata() {
                 }
                 
                 // Initialize scope if not exists
-                if (!scopesCollections[bucket][scope]) {
-                  scopesCollections[bucket][scope] = [];
+                if (!scopesCollections[database][scope]) {
+                  scopesCollections[database][scope] = [];
                 }
                 
                 // Add collection if not already added
-                if (!scopesCollections[bucket][scope].includes(collection)) {
-                  scopesCollections[bucket][scope].push(collection);
+                if (!scopesCollections[database][scope].includes(collection)) {
+                  scopesCollections[database][scope].push(collection);
                   Logger.log('fetchCouchbaseMetadata: Added: %s.%s.%s', 
-                            bucket, scope, collection);
+                            database, scope, collection);
                 }
               }
             }
@@ -390,16 +390,16 @@ function fetchCouchbaseMetadata() {
       }
     }
     
-    // Add _default._default if no other collections were found for a bucket
-    bucketNames.forEach(bucketName => {
-      if (Object.keys(scopesCollections[bucketName]).length === 0) {
-        scopesCollections[bucketName] = { '_default': ['_default'] };
-        Logger.log('fetchCouchbaseMetadata: Added default keyspace for bucket %s', bucketName);
+    // Add _default._default if no other collections were found for a database
+    databaseNames.forEach(databaseName => {
+      if (Object.keys(scopesCollections[databaseName]).length === 0) {
+        scopesCollections[databaseName] = { '_default': ['_default'] };
+        Logger.log('fetchCouchbaseMetadata: Added default keyspace for database %s', databaseName);
       }
     });
 
     return {
-      buckets: bucketNames,
+      databases: databaseNames,
       scopesCollections: scopesCollections
     };
     
@@ -407,7 +407,7 @@ function fetchCouchbaseMetadata() {
     Logger.log('Error in fetchCouchbaseMetadata: %s', e.toString());
     Logger.log('Exception details: %s', e.stack);
     return {
-      buckets: [],
+      databases: [],
       scopesCollections: {}
     };
   }
@@ -420,69 +420,135 @@ function getConfig(request) {
   const cc = DataStudioApp.createCommunityConnector();
   var config = cc.getConfig();
 
-  config
-    .newInfo()
-    .setId('instructions')
-    .setText('Select a collection OR enter a custom Columnar query below. If a custom query is entered, the collection selection will be ignored.');
+  try {
+    // Determine if this is the first request (no params yet)
+    const isFirstRequest = (request.configParams === undefined);
+    const configParams = request.configParams || {};
 
-  // Fetch buckets, scopes, and collections
-  const metadata = fetchCouchbaseMetadata();
-  Logger.log('getConfig: Metadata fetch returned buckets: %s', JSON.stringify(metadata.buckets));
-  
-  // Use Single Select for the collection, as only the first is used by getSchema/getData
-  const collectionSelect = config
-    .newSelectSingle()
-    .setId('collection')
-    .setName('Couchbase Collection')
-    .setHelpText('Select the collection to query data from (ignored if Custom Query is entered).')
-    .setAllowOverride(true);
-  
-  // Build a list of all fully qualified collection paths
-  const collectionPaths = [];
-  
-  // Loop through all buckets, scopes, collections to build paths
-  Object.keys(metadata.scopesCollections).forEach(bucket => {
-    Object.keys(metadata.scopesCollections[bucket]).forEach(scope => {
-      metadata.scopesCollections[bucket][scope].forEach(collection => {
-        // Create a fully qualified path: bucket.scope.collection
-        const path = `${bucket}.${scope}.${collection}`;
-        const label = `${bucket} > ${scope} > ${collection}`;
-        collectionPaths.push({ path: path, label: label });
+    // Set the config to be dynamic based on the official stepped config guide
+    let isStepped = true; // Assume config is ongoing unless proven otherwise
+
+    config
+      .newInfo()
+      .setId('instructions')
+      .setText('Choose a configuration mode: query by selecting a collection, or enter a custom Columnar query.');
+
+    const modeSelector = config.newSelectSingle()
+      .setId('configMode')
+      .setName('Configuration Mode')
+      .setHelpText('Select how you want to define the data source.')
+      .setAllowOverride(true)
+      .setIsDynamic(true); // Changing mode should trigger refresh
+
+    modeSelector.addOption(config.newOptionBuilder().setLabel('Query by Collection').setValue('collection'));
+    modeSelector.addOption(config.newOptionBuilder().setLabel('Use Custom Query').setValue('customQuery'));
+
+    const currentMode = configParams.configMode ? configParams.configMode : 'collection';
+    Logger.log('getConfig: Current mode: %s', currentMode);
+
+    if (currentMode === 'collection') {
+      config.newInfo()
+        .setId('collection_info')
+        .setText('Select the Database, Scope, and Collection to query.');
+
+      const metadata = fetchCouchbaseMetadata();
+      Logger.log('getConfig (collection mode): Metadata: %s', JSON.stringify(metadata));
+
+      const databaseSelect = config.newSelectSingle()
+        .setId('database')
+        .setName('Couchbase Database')
+        .setHelpText('Select the Couchbase Database.')
+        .setAllowOverride(true)
+        .setIsDynamic(true); // Changing database should trigger scope refresh
+      
+      if (metadata && metadata.databases && Array.isArray(metadata.databases)) {
+        metadata.databases.forEach(databaseName => {
+          if (databaseName) {
+            databaseSelect.addOption(config.newOptionBuilder().setLabel(databaseName).setValue(databaseName));
+          }
+        });
+      } else {
+        Logger.log('getConfig: No databases found or metadata.databases is not an array.');
+      }
+
+      const selectedDatabase = configParams.database ? configParams.database : null;
+      if (selectedDatabase && metadata && metadata.scopesCollections && metadata.scopesCollections[selectedDatabase]) {
+        const scopeSelect = config.newSelectSingle()
+          .setId('scope')
+          .setName('Couchbase Scope')
+          .setHelpText('Select the Couchbase Scope within the selected Database.')
+          .setAllowOverride(true)
+          .setIsDynamic(true); // Changing scope should trigger collection refresh
         
-        Logger.log('getConfig: Added collection path: %s', path);
-      });
-    });
-  });
-  
-  // Sort collection paths alphabetically
-  collectionPaths.sort((a, b) => a.label.localeCompare(b.label));
-  
-  // Add options for each collection path
-  collectionPaths.forEach(item => {
-    collectionSelect.addOption(
-      config.newOptionBuilder().setLabel(item.label).setValue(item.path)
-    );
-  });
+        Object.keys(metadata.scopesCollections[selectedDatabase]).forEach(scopeName => {
+          if (scopeName) {
+            scopeSelect.addOption(config.newOptionBuilder().setLabel(scopeName).setValue(scopeName));
+          }
+        });
 
-  // Always show query textarea
-  config
-    .newTextArea()
-    .setId('query')
-    .setName('Custom Columnar Query')
-    .setHelpText('Enter a valid Columnar query. If entered, this query will be used instead of the collection selection above.')
-    .setPlaceholder('SELECT airline.name, airline.iata, airline.country FROM `travel-sample`.`inventory`.`airline` AS airline WHERE airline.country = "France" LIMIT 100')
-    .setAllowOverride(true);
-  
-  // Add max rows option
-  config
-    .newTextInput()
-    .setId('maxRows')
-    .setName('Maximum Rows')
-    .setHelpText('Maximum number of rows to return (default: 1000)')
-    .setPlaceholder('1000')
-    .setAllowOverride(true);
+        const selectedScope = configParams.scope ? configParams.scope : null;
+        if (selectedScope && metadata.scopesCollections[selectedDatabase][selectedScope] && Array.isArray(metadata.scopesCollections[selectedDatabase][selectedScope])) {
+          const collectionSelect = config.newSelectSingle()
+            .setId('collectionName')
+            .setName('Couchbase Collection')
+            .setHelpText('Select the Couchbase Collection within the selected Scope.')
+            .setAllowOverride(true); // Collection selection doesn't trigger further steps
+          
+          metadata.scopesCollections[selectedDatabase][selectedScope].forEach(collectionName => {
+            if (collectionName) {
+              collectionSelect.addOption(config.newOptionBuilder().setLabel(collectionName).setValue(collectionName));
+            }
+          });
 
-  return config.build();
+          // If we have reached the point of showing the collection dropdown,
+          // check if a collection has actually been selected to finalize the stepped config.
+          const selectedCollection = configParams.collectionName ? configParams.collectionName : null;
+          if (selectedCollection) { 
+            isStepped = false; // Config is complete for collection mode if collection is selected
+          } 
+        }
+      }
+
+      // Only add maxRows if config is complete for this mode
+      if (!isStepped) {
+        config
+          .newTextInput()
+          .setId('maxRows')
+          .setName('Maximum Rows')
+          .setHelpText('Maximum number of rows to return (default: 1000).')
+          .setPlaceholder('1000')
+          .setAllowOverride(true);
+      }
+
+    } else if (currentMode === 'customQuery') {
+      config.newInfo()
+        .setId('custom_query_info')
+        .setText('Enter your custom Columnar query below.');
+      config
+        .newTextArea()
+        .setId('query')
+        .setName('Custom Columnar Query')
+        .setHelpText('Enter a valid Columnar query. Ensure you include a LIMIT clause if needed.')
+        .setPlaceholder('SELECT airline.name, airline.iata, airline.country FROM `travel-sample`.`inventory`.`airline` AS airline WHERE airline.country = \"France\" LIMIT 100')
+        .setAllowOverride(true);
+      
+      isStepped = false; // Config is complete once the custom query text area is shown
+    }
+
+    // Set the stepped config status for the response
+    config.setIsSteppedConfig(isStepped);
+    Logger.log('getConfig: Setting setIsSteppedConfig to: %s', isStepped);
+
+    return config.build();
+
+  } catch (e) {
+    Logger.log('ERROR in getConfig: %s. Stack: %s', e.message, e.stack);
+    DataStudioApp.createCommunityConnector()
+      .newUserError()
+      .setText('An unexpected error occurred while building the configuration. Please check the Apps Script logs for details. Error: ' + e.message)
+      .setDebugText('getConfig failed: ' + e.stack)
+      .throwException();
+  }
 }
 
 /**
@@ -494,8 +560,8 @@ function getConfig(request) {
 function validateConfig(configParams) {
   Logger.log('Validating config parameters: %s', JSON.stringify(configParams));
   
-  if (!configParams) {
-    throwUserError('No configuration provided');
+  if (!configParams || !configParams.configMode) {
+    throwUserError('No configuration mode provided. Please select a mode.');
   }
   
   // Get credentials from user properties
@@ -507,25 +573,39 @@ function validateConfig(configParams) {
   if (!path || !username || !password) {
     throwUserError('Authentication credentials missing. Please reauthenticate.');
   }
-  
-  // Check that either a collection or query is provided
-  if ((!configParams.collection || configParams.collection.trim() === '') && 
-      (!configParams.query || configParams.query.trim() === '')) {
-    throwUserError('Either a collection or a custom query must be specified');
-  }
-  
-  // Create a validated config object with defaults
+
   const validatedConfig = {
     path: path,
     username: username,
     password: password,
-    collection: configParams.collection ? configParams.collection.trim() : '',
-    query: configParams.query ? configParams.query.trim() : '',
-    maxRows: configParams.maxRows && parseInt(configParams.maxRows) > 0 ? 
-             parseInt(configParams.maxRows) : 1000
+    configMode: configParams.configMode
   };
   
-  Logger.log('Config validation successful');
+  if (configParams.configMode === 'collection') {
+    if (!configParams.database || configParams.database.trim() === '') {
+      throwUserError('Database must be specified in "Query by Collection" mode.');
+    }
+    if (!configParams.scope || configParams.scope.trim() === '') {
+      throwUserError('Scope must be specified in "Query by Collection" mode.');
+    }
+    if (!configParams.collectionName || configParams.collectionName.trim() === '') { // Use collectionName here
+      throwUserError('Collection must be specified in "Query by Collection" mode.');
+    }
+    validatedConfig.database = configParams.database.trim();
+    validatedConfig.scope = configParams.scope.trim();
+    validatedConfig.collectionName = configParams.collectionName.trim(); // Use collectionName
+    validatedConfig.maxRows = configParams.maxRows && parseInt(configParams.maxRows) > 0 ? 
+                             parseInt(configParams.maxRows) : 1000;
+  } else if (configParams.configMode === 'customQuery') {
+    if (!configParams.query || configParams.query.trim() === '') {
+      throwUserError('Custom query must be specified in "Use Custom Query" mode.');
+    }
+    validatedConfig.query = configParams.query.trim();
+  } else {
+    throwUserError('Invalid configuration mode selected.');
+  }
+  
+  Logger.log('Config validation successful: %s', JSON.stringify(validatedConfig));
   return validatedConfig;
 }
 
@@ -725,20 +805,19 @@ function processDocument(document) {
  */
 function getSchema(request) {
   Logger.log('getSchema request: %s', JSON.stringify(request));
-  
+
   try {
     // Get credentials from user properties
     const userProperties = PropertiesService.getUserProperties();
     const path = userProperties.getProperty('dscc.path');
     const username = userProperties.getProperty('dscc.username');
     const password = userProperties.getProperty('dscc.password');
-    
+
     if (!path || !username || !password) {
       Logger.log('getSchema: Missing credentials');
       throwUserError('Authentication credentials missing. Please reauthenticate.');
     }
-    
-    // Check for provided schema fields
+
     const configParams = request.configParams || {};
     if (configParams.schemaFields && configParams.schemaFields.trim() !== '') {
       try {
@@ -751,18 +830,14 @@ function getSchema(request) {
       }
     }
 
-    // --- New Schema Processing Logic using array_infer_schema output ---
-
-    // Helper function to map Couchbase inferred types to Looker Studio types
+    // --- Schema Processing Helper Functions ---
     function mapInferredTypeToLookerType(inferredType) {
-      // Handle array of types (mixed types) - default to STRING for simplicity
       if (Array.isArray(inferredType)) {
         if (inferredType.includes('string')) return 'STRING';
-        if (inferredType.includes('number')) return 'NUMBER'; // Could refine if needed
+        if (inferredType.includes('number')) return 'NUMBER';
         if (inferredType.includes('boolean')) return 'BOOLEAN';
         return 'STRING'; // Default fallback for mixed or unknown arrays
       }
-
       // Handle single types
       switch (inferredType) {
         case 'number':
@@ -770,7 +845,7 @@ function getSchema(request) {
         case 'boolean':
           return 'BOOLEAN';
         case 'string':
-          return 'STRING'; // Could add URL detection here if needed based on samples
+          return 'STRING';
         case 'object':
         case 'array':
         case 'null':
@@ -779,46 +854,34 @@ function getSchema(request) {
       }
     }
 
-    // Helper function to determine concept type based on Looker Studio type
     function getConceptTypeFromLookerType(lookerType) {
       return lookerType === 'NUMBER' ? 'METRIC' : 'DIMENSION';
     }
 
-    // Recursive function to process inferred schema properties
     function processInferredProperties(properties, prefix = '') {
       const fields = [];
       if (!properties || typeof properties !== 'object') {
         return fields;
       }
-
       Object.keys(properties).forEach(key => {
         const fieldInfo = properties[key];
         const fieldName = prefix ? `${prefix}.${key}` : key;
-
         if (fieldInfo.type === 'object' && fieldInfo.properties) {
           // Recursively process nested objects
           fields.push(...processInferredProperties(fieldInfo.properties, fieldName));
         } else if (fieldInfo.type === 'array') {
-           // --- Handle Arrays ---
-           // Option 1: Represent the whole array as a single STRING field (simpler)
+           // Represent the whole array as a single STRING field
            fields.push({
              name: fieldName,
              label: fieldName,
-             dataType: 'STRING', // Represent array content as a string
+             dataType: 'STRING', 
              semantics: { conceptType: 'DIMENSION' }
            });
            Logger.log('processInferredProperties: Added field for array (as STRING): %s', fieldName);
-
-           // Option 2: If array contains objects, try to infer sub-fields (more complex)
-           // This requires looking at 'items' if array_infer_schema provides it,
-           // or potentially running another inference on array elements.
-           // For now, sticking to Option 1.
-
         } else {
           // Handle primitive types (string, number, boolean, null, or mixed)
           const lookerType = mapInferredTypeToLookerType(fieldInfo.type);
           const conceptType = getConceptTypeFromLookerType(lookerType);
-
           fields.push({
             name: fieldName,
             label: fieldName,
@@ -830,84 +893,40 @@ function getSchema(request) {
       });
       return fields;
     }
-
-    // --- End of New Schema Processing Logic ---
-
-
-    // Helper function to determine Data Studio data type (kept for reference, but new logic preferred)
-    function getDataType_Legacy(value) {
-      const type = typeof value;
-      
-      if (value === null || value === undefined) {
-        return 'STRING';
-      } else if (type === 'number') {
-        // Keep differentiating between integer and float? For now, just NUMBER.
-        return 'NUMBER'; // Looker Studio differentiates Number/Percent/Currency via formatting options.
-      } else if (type === 'boolean') {
-        return 'BOOLEAN';
-      } else if (type === 'string') {
-        // Check for URL first
-        if (value.startsWith('http://') || value.startsWith('https://')) {
-          return 'URL';
-        } else {
-          // Keep other strings as STRING/DIMENSION (including potential dates)
-          return 'STRING';
-        }
-      } else {
-        return 'STRING'; // Default for objects and arrays if they sneak through
-      }
-    }
-    
-    // Helper function to determine concept type
-    function getConceptType(value, dataType) {
-      if (dataType === 'NUMBER') {
-        return 'METRIC';
-      } else if (dataType === 'BOOLEAN') {
-        return 'DIMENSION';
-      } else {
-        return 'DIMENSION';
-      }
-    }
+    // --- End of Schema Processing Helper Functions ---
 
     // --- Construct the array_infer_schema query ---
     let inferSchemaQuery = '';
-    let targetCollectionPath = ''; // To store the properly escaped path
+    let targetCollectionPath = ''; 
 
-    if (configParams.collection && configParams.collection.trim() !== '') {
-      const collectionParts = configParams.collection.split('.');
-      if (collectionParts.length === 3) {
-        // Escape each part: bucket.scope.collection
-        targetCollectionPath = `\`${collectionParts[0]}\`.\`${collectionParts[1]}\`.\`${collectionParts[2]}\``;
-        // Construct the inference query
-        inferSchemaQuery = `SELECT array_infer_schema((SELECT VALUE t FROM ${targetCollectionPath} AS t LIMIT 1000)) AS inferred_schema;`; // Limit subquery for performance
-      } else {
-        throwUserError('Invalid collection path specified. Use format: bucket.scope.collection');
+    if (configParams.configMode === 'collection') {
+      if (!configParams.database || !configParams.scope || !configParams.collectionName) {
+        throwUserError('Database, Scope, and Collection must be selected to infer schema in "Query by Collection" mode.');
       }
-    } else if (configParams.query && configParams.query.trim() !== '') {
-       // If a custom query is provided, try to infer schema from its results
-       // Note: This is less reliable than inferring directly from the collection
-       // We wrap the user's query in the array_infer_schema call.
-       // We need to remove any trailing semicolon from the user's query first.
+      targetCollectionPath = `\`${configParams.database}\`.\`${configParams.scope}\`.\`${configParams.collectionName}\``;
+      inferSchemaQuery = `SELECT array_infer_schema((SELECT VALUE t FROM ${targetCollectionPath} AS t LIMIT 1000)) AS inferred_schema;`;
+      Logger.log('getSchema: Inferring schema from collection: %s', targetCollectionPath);
+    } else if (configParams.configMode === 'customQuery') {
+       if (!configParams.query || configParams.query.trim() === '') {
+         throwUserError('Custom query must be specified to infer schema in "Use Custom Query" mode.');
+       }
        let userQuery = configParams.query.trim().replace(/;$/, '');
-       // Add a LIMIT if not present to avoid inferring from too much data
        if (!userQuery.toLowerCase().includes('limit')) {
-         userQuery += ' LIMIT 1000'; // Add a reasonable limit
+         userQuery += ' LIMIT 1000'; 
        }
        inferSchemaQuery = `SELECT array_infer_schema((${userQuery})) AS inferred_schema;`;
        Logger.log('getSchema: Inferring schema from custom query results.');
     } else {
-      throwUserError('Either collection or custom query must be specified to infer schema.');
+      throwUserError('Invalid configuration mode. Cannot infer schema.');
     }
 
     Logger.log('Schema inference query: %s', inferSchemaQuery);
-    // Construct the API URL
     const columnarUrl = constructApiUrl(path, 18095);
     const apiUrl = columnarUrl + '/api/v1/request';
 
-    // Setup the API request for schema inference
     const payload = {
       statement: inferSchemaQuery,
-      timeout: '60s' // Allow more time for inference
+      timeout: '60s'
     };
     
     const options = {
@@ -921,12 +940,10 @@ function getSchema(request) {
       validateHttpsCertificates: false
     };
 
-    // Make the API request
     const response = UrlFetchApp.fetch(apiUrl, options);
     const responseCode = response.getResponseCode();
     const responseBody = response.getContentText();
 
-    // Log raw response
     Logger.log('getSchema: Raw API response (code %s): %s', responseCode, responseBody);
 
     if (responseCode !== 200) {
@@ -934,7 +951,6 @@ function getSchema(request) {
       throwUserError(`Couchbase API error during schema inference (${responseCode}): ${responseBody}`);
     }
 
-    // Parse the response
     let parsedResponse;
     try {
       parsedResponse = JSON.parse(responseBody);
@@ -943,35 +959,27 @@ function getSchema(request) {
        throwUserError('Invalid response from Couchbase API during schema inference: ' + e.message);
     }
 
-    // Extract the inferred schema
     if (!parsedResponse.results || parsedResponse.results.length === 0 || !parsedResponse.results[0].inferred_schema) {
       Logger.log('Schema inference query did not return the expected structure. Response: %s', responseBody);
-      // Fallback or error - maybe try the old method or return a default?
-      // For now, throw an error. Could potentially fall back to SELECT * LIMIT 1 here.
       throwUserError('Schema inference failed: Could not find inferred_schema in the response.');
     }
 
-    // The result is an array, usually with one element for the overall schema.
     const inferredSchemaArray = parsedResponse.results[0].inferred_schema;
     if (!Array.isArray(inferredSchemaArray) || inferredSchemaArray.length === 0) {
        Logger.log('Inferred schema array is empty or not an array.');
        throwUserError('Schema inference failed: Invalid inferred_schema structure.');
     }
 
-    // Assuming the first element contains the schema for the collection/query.
     const schemaDefinition = inferredSchemaArray[0];
-
     if (!schemaDefinition || schemaDefinition.type !== 'object' || !schemaDefinition.properties) {
        Logger.log('Inferred schema does not contain a valid top-level object with properties.');
        throwUserError('Schema inference failed: Could not find properties in the inferred schema.');
     }
 
-    // Process the properties object to generate Looker Studio fields
     const fields = processInferredProperties(schemaDefinition.properties);
 
     if (fields.length === 0) {
        Logger.log('Warning: Schema inference resulted in zero fields. Check collection/query and data.');
-       // Provide a minimal default schema to avoid breaking Looker Studio
        return { schema: [{ name: 'empty_result', label: 'Empty Result', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}] };
     }
 
@@ -980,7 +988,7 @@ function getSchema(request) {
 
   } catch (e) {
     Logger.log('Error in getSchema: %s', e.message);
-    Logger.log('getSchema Error Stack: %s', e.stack); // Log stack trace
+    Logger.log('getSchema Error Stack: %s', e.stack);
     throwUserError(`Error inferring schema: ${e.message}`);
   }
 }
@@ -1136,9 +1144,8 @@ function getData(request) {
     // Get configuration
     const configParams = request.configParams || {};
     
-    if ((!configParams.collection || configParams.collection.trim() === '') && 
-        (!configParams.query || configParams.query.trim() === '')) {
-      throwUserError('Either collection or custom query must be specified.');
+    if (!configParams.configMode) {
+      throwUserError('Configuration mode not specified.');
     }
     
     // Get requested fields
@@ -1163,25 +1170,20 @@ function getData(request) {
     // Prepare the query
     let query = '';
     
-    if (configParams.query && configParams.query.trim() !== '') {
+    if (configParams.configMode === 'customQuery') {
       // Use custom query
+      if (!configParams.query || configParams.query.trim() === '') {
+        throwUserError('Custom query is missing in "Use Custom Query" mode.');
+      }
       query = configParams.query.trim();
-      
-      // Add LIMIT clause if not present
-      if (!query.toLowerCase().includes('limit')) {
-        query += ` LIMIT ${maxRows}`;
-      }
-    } else {
+      Logger.log('getData: Using custom query as provided.');
+    } else if (configParams.configMode === 'collection') {
       // Construct query based on collection and requested fields
-      const collectionParts = configParams.collection.split('.');
-      let collectionPath;
-      if (collectionParts.length === 3) {
-        // Escape each part with backticks
-        collectionPath = '`' + collectionParts[0] + '`.`' + collectionParts[1] + '`.`' + collectionParts[2] + '`';
-      } else {
-        throwUserError('Invalid collection path specified. Use format: bucket.scope.collection');
+      if (!configParams.database || !configParams.scope || !configParams.collectionName) {
+        throwUserError('Database, Scope, and Collection must be selected in "Query by Collection" mode.');
       }
-
+      const collectionPath = '`' + configParams.database + '`.`' + configParams.scope + '`.`' + configParams.collectionName + '`';
+      
       // Construct the SELECT clause
       let selectClause = '*'; // Default to * if no fields requested
       const requiredSourceFields = new Set(); // Keep track of top-level fields needed from Couchbase
@@ -1212,7 +1214,9 @@ function getData(request) {
       }
 
       // Use standard string concatenation
-      query = 'SELECT ' + selectClause + ' FROM ' + collectionPath + ' LIMIT ' + maxRows;
+      query = 'SELECT ' + selectClause + ' FROM ' + collectionPath + ' LIMIT ' + (configParams.maxRows || 1000); // Use maxRows from config or default
+    } else {
+      throwUserError('Invalid configuration mode specified for getData.');
     }
     
     Logger.log('Executing query: %s', query);
