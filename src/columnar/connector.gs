@@ -150,7 +150,7 @@ function resetAuth() {
 // ==========================================================================
 
 /**
- * Fetches available buckets, scopes, and collections from Couchbase.
+ * Fetches available databases, scopes, and collections from Couchbase.
  * Used to populate dropdowns in the config UI.
  */
 function fetchCouchbaseMetadata() {
@@ -165,7 +165,7 @@ function fetchCouchbaseMetadata() {
   if (!path || !username || !password) {
     Logger.log('fetchCouchbaseMetadata: Authentication credentials missing from storage.');
     return {
-      buckets: [],
+      databases: [],
       scopesCollections: {}
     };
   }
@@ -187,7 +187,7 @@ function fetchCouchbaseMetadata() {
   };
   
   // Initialize empty result structure
-  let bucketNames = [];
+  let databaseNames = [];
   const scopesCollections = {};
   
   try {
@@ -218,7 +218,7 @@ function fetchCouchbaseMetadata() {
       // Use System.Metadata approach
       Logger.log('fetchCouchbaseMetadata: Using System.Metadata approach');
       
-      // Get databases (buckets)
+      // Get databases (databases)
       const databaseQueryPayload = {
         statement: "SELECT DISTINCT DatabaseName FROM System.Metadata.`Dataset`",
         timeout: "10000ms"
@@ -232,15 +232,15 @@ function fetchCouchbaseMetadata() {
         const databaseData = JSON.parse(databaseResponse.getContentText());
         
         if (databaseData.results && Array.isArray(databaseData.results)) {
-          bucketNames = databaseData.results
+          databaseNames = databaseData.results
             .filter(item => item.DatabaseName && item.DatabaseName !== 'System') // Filter out System database
             .map(item => item.DatabaseName);
           
-          Logger.log('fetchCouchbaseMetadata: Found databases/buckets: %s', bucketNames.join(', '));
+          Logger.log('fetchCouchbaseMetadata: Found databases/databases: %s', databaseNames.join(', '));
         }
       }
       
-      // Get all collections and their scope/bucket info
+      // Get all collections and their scope/database info
       const collectionsQueryPayload = {
         statement: "SELECT DatabaseName, DataverseName, DatasetName FROM System.Metadata.`Dataset` WHERE DatabaseName != 'System'",
         timeout: "10000ms"
@@ -256,33 +256,33 @@ function fetchCouchbaseMetadata() {
         if (collectionsData.results && Array.isArray(collectionsData.results)) {
           Logger.log('fetchCouchbaseMetadata: Found %s collections in metadata', collectionsData.results.length);
           
-          // Initialize bucket structures
-          bucketNames.forEach(bucket => {
-            scopesCollections[bucket] = {};
+          // Initialize database structures
+          databaseNames.forEach(database => {
+            scopesCollections[database] = {};
           });
           
           // Process collections data
           collectionsData.results.forEach(item => {
             if (item.DatabaseName && item.DataverseName && item.DatasetName) {
-              const bucket = item.DatabaseName;
+              const database = item.DatabaseName;
               const scope = item.DataverseName;
               const collection = item.DatasetName;
               
-              // Skip non-matching buckets
-              if (!bucketNames.includes(bucket)) {
+              // Skip non-matching databases
+              if (!databaseNames.includes(database)) {
                 return;
               }
               
               // Initialize scope if not exists
-              if (!scopesCollections[bucket][scope]) {
-                scopesCollections[bucket][scope] = [];
+              if (!scopesCollections[database][scope]) {
+                scopesCollections[database][scope] = [];
               }
               
               // Add collection if not already added
-              if (!scopesCollections[bucket][scope].includes(collection)) {
-                scopesCollections[bucket][scope].push(collection);
+              if (!scopesCollections[database][scope].includes(collection)) {
+                scopesCollections[database][scope].push(collection);
                 Logger.log('fetchCouchbaseMetadata: Added: %s.%s.%s', 
-                          bucket, scope, collection);
+                          database, scope, collection);
               }
             }
           });
@@ -293,32 +293,32 @@ function fetchCouchbaseMetadata() {
       Logger.log('fetchCouchbaseMetadata: System.Metadata is not accessible, using legacy approach');
       
       // For Columnar, we need to query system:keyspaces directly
-      const bucketQueryPayload = {
-        statement: "SELECT DISTINCT SPLIT_PART(keyspace_id, ':', 1) AS bucket FROM system:keyspaces WHERE SPLIT_PART(keyspace_id, ':', 1) != 'system';",
+      const databaseQueryPayload = {
+        statement: "SELECT DISTINCT SPLIT_PART(keyspace_id, ':', 1) AS database FROM system:keyspaces WHERE SPLIT_PART(keyspace_id, ':', 1) != 'system';",
         timeout: "10000ms"
       };
       
-      // First get all buckets
-      options.payload = JSON.stringify(bucketQueryPayload);
-      Logger.log('fetchCouchbaseMetadata: Querying for buckets (legacy)');
+      // First get all databases
+      options.payload = JSON.stringify(databaseQueryPayload);
+      Logger.log('fetchCouchbaseMetadata: Querying for databases (legacy)');
       
-      const bucketResponse = UrlFetchApp.fetch(queryUrl, options);
+      const databaseResponse = UrlFetchApp.fetch(queryUrl, options);
       
-      if (bucketResponse.getResponseCode() === 200) {
-        const bucketData = JSON.parse(bucketResponse.getContentText());
+      if (databaseResponse.getResponseCode() === 200) {
+        const databaseData = JSON.parse(databaseResponse.getContentText());
         
-        if (bucketData.results && Array.isArray(bucketData.results)) {
-          bucketNames = bucketData.results
-            .filter(item => item.bucket) // Filter out any null or undefined
-            .map(item => item.bucket);
+        if (databaseData.results && Array.isArray(databaseData.results)) {
+          databaseNames = databaseData.results
+            .filter(item => item.database) // Filter out any null or undefined
+            .map(item => item.database);
           
-          Logger.log('fetchCouchbaseMetadata: Found buckets: %s', bucketNames.join(', '));
+          Logger.log('fetchCouchbaseMetadata: Found databases: %s', databaseNames.join(', '));
         } else {
-          Logger.log('fetchCouchbaseMetadata: Bucket query result format unexpected or empty.');
+          Logger.log('fetchCouchbaseMetadata: Database query result format unexpected or empty.');
         }
       } else {
-        Logger.log('Error fetching buckets. Code: %s, Response: %s', 
-                  bucketResponse.getResponseCode(), bucketResponse.getContentText());
+        Logger.log('Error fetching databases. Code: %s, Response: %s', 
+                  databaseResponse.getResponseCode(), databaseResponse.getContentText());
       }
       
       // Now get all keyspaces
@@ -336,9 +336,9 @@ function fetchCouchbaseMetadata() {
         const keyspaceData = JSON.parse(keyspaceResponse.getContentText());
         Logger.log('fetchCouchbaseMetadata: Keyspace response received');
         
-        // Initialize bucket structures
-        bucketNames.forEach(bucket => {
-          scopesCollections[bucket] = {};
+        // Initialize database structures
+        databaseNames.forEach(database => {
+          scopesCollections[database] = {};
         });
         
         if (keyspaceData.results && Array.isArray(keyspaceData.results)) {
@@ -346,15 +346,15 @@ function fetchCouchbaseMetadata() {
             if (item.keyspace_id) {
               const keyspaceParts = item.keyspace_id.split(':');
               if (keyspaceParts.length >= 2) {
-                const bucket = keyspaceParts[0];
+                const database = keyspaceParts[0];
                 
-                // Skip non-matching buckets
-                if (!bucketNames.includes(bucket)) {
+                // Skip non-matching databases
+                if (!databaseNames.includes(database)) {
                   return;
                 }
                 
                 // Parse scope and collection from keyspace_id
-                // Format is typically bucket:scope.collection
+                // Format is typically database:scope.collection
                 const scopeCollectionParts = keyspaceParts[1].split('.');
                 let scope, collection;
                 
@@ -368,15 +368,15 @@ function fetchCouchbaseMetadata() {
                 }
                 
                 // Initialize scope if not exists
-                if (!scopesCollections[bucket][scope]) {
-                  scopesCollections[bucket][scope] = [];
+                if (!scopesCollections[database][scope]) {
+                  scopesCollections[database][scope] = [];
                 }
                 
                 // Add collection if not already added
-                if (!scopesCollections[bucket][scope].includes(collection)) {
-                  scopesCollections[bucket][scope].push(collection);
+                if (!scopesCollections[database][scope].includes(collection)) {
+                  scopesCollections[database][scope].push(collection);
                   Logger.log('fetchCouchbaseMetadata: Added: %s.%s.%s', 
-                            bucket, scope, collection);
+                            database, scope, collection);
                 }
               }
             }
@@ -390,16 +390,16 @@ function fetchCouchbaseMetadata() {
       }
     }
     
-    // Add _default._default if no other collections were found for a bucket
-    bucketNames.forEach(bucketName => {
-      if (Object.keys(scopesCollections[bucketName]).length === 0) {
-        scopesCollections[bucketName] = { '_default': ['_default'] };
-        Logger.log('fetchCouchbaseMetadata: Added default keyspace for bucket %s', bucketName);
+    // Add _default._default if no other collections were found for a database
+    databaseNames.forEach(databaseName => {
+      if (Object.keys(scopesCollections[databaseName]).length === 0) {
+        scopesCollections[databaseName] = { '_default': ['_default'] };
+        Logger.log('fetchCouchbaseMetadata: Added default keyspace for database %s', databaseName);
       }
     });
 
     return {
-      buckets: bucketNames,
+      databases: databaseNames,
       scopesCollections: scopesCollections
     };
     
@@ -407,7 +407,7 @@ function fetchCouchbaseMetadata() {
     Logger.log('Error in fetchCouchbaseMetadata: %s', e.toString());
     Logger.log('Exception details: %s', e.stack);
     return {
-      buckets: [],
+      databases: [],
       scopesCollections: {}
     };
   }
@@ -449,52 +449,52 @@ function getConfig(request) {
     if (currentMode === 'collection') {
       config.newInfo()
         .setId('collection_info')
-        .setText('Select the Bucket, Scope, and Collection to query.');
+        .setText('Select the Database, Scope, and Collection to query.');
 
       const metadata = fetchCouchbaseMetadata();
       Logger.log('getConfig (collection mode): Metadata: %s', JSON.stringify(metadata));
 
-      const bucketSelect = config.newSelectSingle()
-        .setId('bucket')
-        .setName('Couchbase Bucket')
-        .setHelpText('Select the Couchbase Bucket.')
+      const databaseSelect = config.newSelectSingle()
+        .setId('database')
+        .setName('Couchbase Database')
+        .setHelpText('Select the Couchbase Database.')
         .setAllowOverride(true)
-        .setIsDynamic(true); // Changing bucket should trigger scope refresh
+        .setIsDynamic(true); // Changing database should trigger scope refresh
       
-      if (metadata && metadata.buckets && Array.isArray(metadata.buckets)) {
-        metadata.buckets.forEach(bucketName => {
-          if (bucketName) {
-            bucketSelect.addOption(config.newOptionBuilder().setLabel(bucketName).setValue(bucketName));
+      if (metadata && metadata.databases && Array.isArray(metadata.databases)) {
+        metadata.databases.forEach(databaseName => {
+          if (databaseName) {
+            databaseSelect.addOption(config.newOptionBuilder().setLabel(databaseName).setValue(databaseName));
           }
         });
       } else {
-        Logger.log('getConfig: No buckets found or metadata.buckets is not an array.');
+        Logger.log('getConfig: No databases found or metadata.databases is not an array.');
       }
 
-      const selectedBucket = configParams.bucket ? configParams.bucket : null;
-      if (selectedBucket && metadata && metadata.scopesCollections && metadata.scopesCollections[selectedBucket]) {
+      const selectedDatabase = configParams.database ? configParams.database : null;
+      if (selectedDatabase && metadata && metadata.scopesCollections && metadata.scopesCollections[selectedDatabase]) {
         const scopeSelect = config.newSelectSingle()
           .setId('scope')
           .setName('Couchbase Scope')
-          .setHelpText('Select the Couchbase Scope within the selected Bucket.')
+          .setHelpText('Select the Couchbase Scope within the selected Database.')
           .setAllowOverride(true)
           .setIsDynamic(true); // Changing scope should trigger collection refresh
         
-        Object.keys(metadata.scopesCollections[selectedBucket]).forEach(scopeName => {
+        Object.keys(metadata.scopesCollections[selectedDatabase]).forEach(scopeName => {
           if (scopeName) {
             scopeSelect.addOption(config.newOptionBuilder().setLabel(scopeName).setValue(scopeName));
           }
         });
 
         const selectedScope = configParams.scope ? configParams.scope : null;
-        if (selectedScope && metadata.scopesCollections[selectedBucket][selectedScope] && Array.isArray(metadata.scopesCollections[selectedBucket][selectedScope])) {
+        if (selectedScope && metadata.scopesCollections[selectedDatabase][selectedScope] && Array.isArray(metadata.scopesCollections[selectedDatabase][selectedScope])) {
           const collectionSelect = config.newSelectSingle()
             .setId('collectionName')
             .setName('Couchbase Collection')
             .setHelpText('Select the Couchbase Collection within the selected Scope.')
             .setAllowOverride(true); // Collection selection doesn't trigger further steps
           
-          metadata.scopesCollections[selectedBucket][selectedScope].forEach(collectionName => {
+          metadata.scopesCollections[selectedDatabase][selectedScope].forEach(collectionName => {
             if (collectionName) {
               collectionSelect.addOption(config.newOptionBuilder().setLabel(collectionName).setValue(collectionName));
             }
@@ -582,8 +582,8 @@ function validateConfig(configParams) {
   };
   
   if (configParams.configMode === 'collection') {
-    if (!configParams.bucket || configParams.bucket.trim() === '') {
-      throwUserError('Bucket must be specified in "Query by Collection" mode.');
+    if (!configParams.database || configParams.database.trim() === '') {
+      throwUserError('Database must be specified in "Query by Collection" mode.');
     }
     if (!configParams.scope || configParams.scope.trim() === '') {
       throwUserError('Scope must be specified in "Query by Collection" mode.');
@@ -591,7 +591,7 @@ function validateConfig(configParams) {
     if (!configParams.collectionName || configParams.collectionName.trim() === '') { // Use collectionName here
       throwUserError('Collection must be specified in "Query by Collection" mode.');
     }
-    validatedConfig.bucket = configParams.bucket.trim();
+    validatedConfig.database = configParams.database.trim();
     validatedConfig.scope = configParams.scope.trim();
     validatedConfig.collectionName = configParams.collectionName.trim(); // Use collectionName
     validatedConfig.maxRows = configParams.maxRows && parseInt(configParams.maxRows) > 0 ? 
@@ -900,10 +900,10 @@ function getSchema(request) {
     let targetCollectionPath = ''; 
 
     if (configParams.configMode === 'collection') {
-      if (!configParams.bucket || !configParams.scope || !configParams.collectionName) {
-        throwUserError('Bucket, Scope, and Collection must be selected to infer schema in "Query by Collection" mode.');
+      if (!configParams.database || !configParams.scope || !configParams.collectionName) {
+        throwUserError('Database, Scope, and Collection must be selected to infer schema in "Query by Collection" mode.');
       }
-      targetCollectionPath = `\`${configParams.bucket}\`.\`${configParams.scope}\`.\`${configParams.collectionName}\``;
+      targetCollectionPath = `\`${configParams.database}\`.\`${configParams.scope}\`.\`${configParams.collectionName}\``;
       inferSchemaQuery = `SELECT array_infer_schema((SELECT VALUE t FROM ${targetCollectionPath} AS t LIMIT 1000)) AS inferred_schema;`;
       Logger.log('getSchema: Inferring schema from collection: %s', targetCollectionPath);
     } else if (configParams.configMode === 'customQuery') {
@@ -1179,10 +1179,10 @@ function getData(request) {
       Logger.log('getData: Using custom query as provided.');
     } else if (configParams.configMode === 'collection') {
       // Construct query based on collection and requested fields
-      if (!configParams.bucket || !configParams.scope || !configParams.collectionName) {
-        throwUserError('Bucket, Scope, and Collection must be selected in "Query by Collection" mode.');
+      if (!configParams.database || !configParams.scope || !configParams.collectionName) {
+        throwUserError('Database, Scope, and Collection must be selected in "Query by Collection" mode.');
       }
-      const collectionPath = '`' + configParams.bucket + '`.`' + configParams.scope + '`.`' + configParams.collectionName + '`';
+      const collectionPath = '`' + configParams.database + '`.`' + configParams.scope + '`.`' + configParams.collectionName + '`';
       
       // Construct the SELECT clause
       let selectClause = '*'; // Default to * if no fields requested
