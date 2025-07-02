@@ -28,8 +28,18 @@ if (!config.baseUrl) {
   process.exit(1); // Exit if critical config is missing
 }
 
-// Construct the full URL with port
-const fullBaseUrl = `${config.baseUrl}:${config.port}`;
+// Convert couchbases:// protocol to https:// for REST API access
+let processedBaseUrl = config.baseUrl;
+if (processedBaseUrl.startsWith('couchbases://')) {
+  processedBaseUrl = processedBaseUrl.replace('couchbases://', 'https://');
+} else if (processedBaseUrl.startsWith('couchbase://')) {
+  processedBaseUrl = processedBaseUrl.replace('couchbase://', 'http://');
+}
+
+// For Couchbase Columnar, we typically don't need to add the port since it's included in the URL
+// But let's handle both cases
+const fullBaseUrl = processedBaseUrl.includes(':18095') ? processedBaseUrl : `${processedBaseUrl}:${config.port}`;
+
 console.log(`Columnar Client Initializing with Base URL: ${fullBaseUrl}`);
 console.log(`Using Username: ${config.auth.username}`);
 if (!config.rejectUnauthorized) {
@@ -61,9 +71,9 @@ async function submitRequest(query, clientContextId = null) {
     if (clientContextId) {
       payload.client_context_id = clientContextId;
     }
-    console.log(`Submitting request: ${JSON.stringify(payload)}`);
+    // console.log(`Submitting request: ${JSON.stringify(payload)}`); // Comment out verbose logging
     const response = await api.post('/api/v1/request', payload);
-    console.log('Request submission successful:', response.data);
+    // console.log('Request submission successful:', response.data); // Comment out verbose response logging
     return response.data;
   } catch (error) {
     const errorMsg = error.response?.data || error.message;
