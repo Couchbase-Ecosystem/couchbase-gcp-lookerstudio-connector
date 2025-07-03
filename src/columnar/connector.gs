@@ -150,7 +150,7 @@ function resetAuth() {
 // ==========================================================================
 
 /**
- * Fetches available databases, scopes, and collections from Couchbase.
+ * Fetches available databases, scopes, views, and collections from Couchbase.
  * Used to populate dropdowns in the config UI.
  */
 function fetchCouchbaseMetadata() {
@@ -166,7 +166,8 @@ function fetchCouchbaseMetadata() {
     Logger.log('fetchCouchbaseMetadata: Authentication credentials missing from storage.');
     return {
       databases: [],
-      scopesCollections: {}
+      scopesCollections: {},
+      scopesViews: {}
     };
   }
   
@@ -189,6 +190,7 @@ function fetchCouchbaseMetadata() {
   // Initialize empty result structure
   let databaseNames = [];
   const scopesCollections = {};
+  const scopesViews = {};
   
   try {
     // First check if System.Metadata is accessible
@@ -242,7 +244,7 @@ function fetchCouchbaseMetadata() {
       
       // Get all collections and their scope/database info
       const collectionsQueryPayload = {
-        statement: "SELECT DatabaseName, DataverseName, DatasetName FROM System.Metadata.`Dataset` WHERE DatabaseName != 'System'",
+        statement: "SELECT DatabaseName, DataverseName, DatasetName, DatasetType FROM System.Metadata.`Dataset` WHERE DatabaseName != 'System'",
         timeout: "10000ms"
       };
       
@@ -259,30 +261,44 @@ function fetchCouchbaseMetadata() {
           // Initialize database structures
           databaseNames.forEach(database => {
             scopesCollections[database] = {};
+            scopesViews[database] = {};
           });
           
-          // Process collections data
+          // Process collections and views data
           collectionsData.results.forEach(item => {
             if (item.DatabaseName && item.DataverseName && item.DatasetName) {
               const database = item.DatabaseName;
               const scope = item.DataverseName;
-              const collection = item.DatasetName;
+              const datasetName = item.DatasetName;
+              const datasetType = item.DatasetType || 'COLLECTION'; // Default to COLLECTION if type is missing
               
               // Skip non-matching databases
               if (!databaseNames.includes(database)) {
                 return;
               }
               
-              // Initialize scope if not exists
-              if (!scopesCollections[database][scope]) {
-                scopesCollections[database][scope] = [];
-              }
-              
-              // Add collection if not already added
-              if (!scopesCollections[database][scope].includes(collection)) {
-                scopesCollections[database][scope].push(collection);
-                Logger.log('fetchCouchbaseMetadata: Added: %s.%s.%s', 
-                          database, scope, collection);
+              if (datasetType === 'VIEW') {
+                // Process as view
+                if (!scopesViews[database][scope]) {
+                  scopesViews[database][scope] = [];
+                }
+                
+                if (!scopesViews[database][scope].includes(datasetName)) {
+                  scopesViews[database][scope].push(datasetName);
+                  Logger.log('fetchCouchbaseMetadata: Added view: %s.%s.%s', 
+                            database, scope, datasetName);
+                }
+              } else {
+                // Process as collection
+                if (!scopesCollections[database][scope]) {
+                  scopesCollections[database][scope] = [];
+                }
+                
+                if (!scopesCollections[database][scope].includes(datasetName)) {
+                  scopesCollections[database][scope].push(datasetName);
+                  Logger.log('fetchCouchbaseMetadata: Added collection: %s.%s.%s', 
+                            database, scope, datasetName);
+                }
               }
             }
           });
@@ -339,6 +355,7 @@ function fetchCouchbaseMetadata() {
         // Initialize database structures
         databaseNames.forEach(database => {
           scopesCollections[database] = {};
+          scopesViews[database] = {};
         });
         
         if (keyspaceData.results && Array.isArray(keyspaceData.results)) {
@@ -396,11 +413,16 @@ function fetchCouchbaseMetadata() {
         scopesCollections[databaseName] = { '_default': ['_default'] };
         Logger.log('fetchCouchbaseMetadata: Added default keyspace for database %s', databaseName);
       }
+      // Initialize empty views structure if no views exist
+      if (!scopesViews[databaseName] || Object.keys(scopesViews[databaseName]).length === 0) {
+        scopesViews[databaseName] = {};
+      }
     });
 
     return {
       databases: databaseNames,
-      scopesCollections: scopesCollections
+      scopesCollections: scopesCollections,
+      scopesViews: scopesViews
     };
     
   } catch (e) {
@@ -408,7 +430,8 @@ function fetchCouchbaseMetadata() {
     Logger.log('Exception details: %s', e.stack);
     return {
       databases: [],
-      scopesCollections: {}
+      scopesCollections: {},
+      scopesViews: {}
     };
   }
 }
@@ -431,7 +454,7 @@ function getConfig(request) {
     config
       .newInfo()
       .setId('instructions')
-      .setText('Choose a configuration mode: query by selecting a collection, or enter a custom Columnar query.');
+      .setText('Choose a configuration mode: query by selecting a view (recommended), query by selecting a collection, or enter a custom Columnar query.');
 
     const modeSelector = config.newSelectSingle()
       .setId('configMode')
@@ -440,19 +463,37 @@ function getConfig(request) {
       .setAllowOverride(true)
       .setIsDynamic(true); // Changing mode should trigger refresh
 
+    modeSelector.addOption(config.newOptionBuilder().setLabel('Query by View').setValue('view'));
     modeSelector.addOption(config.newOptionBuilder().setLabel('Query by Collection').setValue('collection'));
     modeSelector.addOption(config.newOptionBuilder().setLabel('Use Custom Query').setValue('customQuery'));
 
-    const currentMode = configParams.configMode ? configParams.configMode : 'collection';
+    const currentMode = configParams.configMode ? configParams.configMode : 'view';
     Logger.log('getConfig: Current mode: %s', currentMode);
 
-    if (currentMode === 'collection') {
-      config.newInfo()
-        .setId('collection_info')
-        .setText('Select the Database, Scope, and Collection to query.');
+    if (currentMode === 'view' || currentMode === 'collection') {
+      const isViewMode = currentMode === 'view';
+      const entityFieldName = isViewMode ? 'viewName' : 'collectionName';
+      const entityLabel = isViewMode ? 'View' : 'Collection';
+      const entityLabelPlural = isViewMode ? 'Views' : 'Collections';
+      const scopesDataKey = isViewMode ? 'scopesViews' : 'scopesCollections';
+      
+      // Add mode-specific info messages
+      if (isViewMode) {
+        config.newInfo()
+          .setId('view_info')
+          .setText('Select the Database, Scope, and View to query. Views provide a stable, optimized interface for BI tools.');
+      } else {
+        config.newInfo()
+          .setId('collection_warning')
+          .setText('⚠️ EXPERIMENTAL: Query by Collection is in prototyping phase. You may experience data type inconsistencies and schema inference may not show all fields during schema changes.');
+        
+        config.newInfo()
+          .setId('collection_info')
+          .setText('Select the Database, Scope, and Collection to query.');
+      }
 
       const metadata = fetchCouchbaseMetadata();
-      Logger.log('getConfig (collection mode): Metadata: %s', JSON.stringify(metadata));
+      Logger.log(`getConfig (${currentMode} mode): Metadata: %s`, JSON.stringify(metadata));
 
       const databaseSelect = config.newSelectSingle()
         .setId('database')
@@ -472,39 +513,39 @@ function getConfig(request) {
       }
 
       const selectedDatabase = configParams.database ? configParams.database : null;
-      if (selectedDatabase && metadata && metadata.scopesCollections && metadata.scopesCollections[selectedDatabase]) {
+      if (selectedDatabase && metadata && metadata[scopesDataKey] && metadata[scopesDataKey][selectedDatabase]) {
         const scopeSelect = config.newSelectSingle()
           .setId('scope')
           .setName('Couchbase Scope')
           .setHelpText('Select the Couchbase Scope within the selected Database.')
           .setAllowOverride(true)
-          .setIsDynamic(true); // Changing scope should trigger collection refresh
+          .setIsDynamic(true); // Changing scope should trigger entity refresh
         
-        Object.keys(metadata.scopesCollections[selectedDatabase]).forEach(scopeName => {
+        Object.keys(metadata[scopesDataKey][selectedDatabase]).forEach(scopeName => {
           if (scopeName) {
             scopeSelect.addOption(config.newOptionBuilder().setLabel(scopeName).setValue(scopeName));
           }
         });
 
         const selectedScope = configParams.scope ? configParams.scope : null;
-        if (selectedScope && metadata.scopesCollections[selectedDatabase][selectedScope] && Array.isArray(metadata.scopesCollections[selectedDatabase][selectedScope])) {
-          const collectionSelect = config.newSelectSingle()
-            .setId('collectionName')
-            .setName('Couchbase Collection')
-            .setHelpText('Select the Couchbase Collection within the selected Scope.')
-            .setAllowOverride(true); // Collection selection doesn't trigger further steps
+        if (selectedScope && metadata[scopesDataKey][selectedDatabase][selectedScope] && Array.isArray(metadata[scopesDataKey][selectedDatabase][selectedScope])) {
+          const entitySelect = config.newSelectSingle()
+            .setId(entityFieldName)
+            .setName(`Couchbase ${entityLabel}`)
+            .setHelpText(`Select the Couchbase ${entityLabel} within the selected Scope.`)
+            .setAllowOverride(true); // Entity selection doesn't trigger further steps
           
-          metadata.scopesCollections[selectedDatabase][selectedScope].forEach(collectionName => {
-            if (collectionName) {
-              collectionSelect.addOption(config.newOptionBuilder().setLabel(collectionName).setValue(collectionName));
+          metadata[scopesDataKey][selectedDatabase][selectedScope].forEach(entityName => {
+            if (entityName) {
+              entitySelect.addOption(config.newOptionBuilder().setLabel(entityName).setValue(entityName));
             }
           });
 
-          // If we have reached the point of showing the collection dropdown,
-          // check if a collection has actually been selected to finalize the stepped config.
-          const selectedCollection = configParams.collectionName ? configParams.collectionName : null;
-          if (selectedCollection) { 
-            isStepped = false; // Config is complete for collection mode if collection is selected
+          // If we have reached the point of showing the entity dropdown,
+          // check if an entity has actually been selected to finalize the stepped config.
+          const selectedEntity = configParams[entityFieldName] ? configParams[entityFieldName] : null;
+          if (selectedEntity) { 
+            isStepped = false; // Config is complete for this mode if entity is selected
           } 
         }
       }
@@ -581,19 +622,25 @@ function validateConfig(configParams) {
     configMode: configParams.configMode
   };
   
-  if (configParams.configMode === 'collection') {
+  if (configParams.configMode === 'view' || configParams.configMode === 'collection') {
+    const isViewMode = configParams.configMode === 'view';
+    const entityFieldName = isViewMode ? 'viewName' : 'collectionName';
+    const entityLabel = isViewMode ? 'View' : 'Collection';
+    const modeLabel = isViewMode ? 'Query by View' : 'Query by Collection';
+    
     if (!configParams.database || configParams.database.trim() === '') {
-      throwUserError('Database must be specified in "Query by Collection" mode.');
+      throwUserError(`Database must be specified in "${modeLabel}" mode.`);
     }
     if (!configParams.scope || configParams.scope.trim() === '') {
-      throwUserError('Scope must be specified in "Query by Collection" mode.');
+      throwUserError(`Scope must be specified in "${modeLabel}" mode.`);
     }
-    if (!configParams.collectionName || configParams.collectionName.trim() === '') { // Use collectionName here
-      throwUserError('Collection must be specified in "Query by Collection" mode.');
+    if (!configParams[entityFieldName] || configParams[entityFieldName].trim() === '') {
+      throwUserError(`${entityLabel} must be specified in "${modeLabel}" mode.`);
     }
+    
     validatedConfig.database = configParams.database.trim();
     validatedConfig.scope = configParams.scope.trim();
-    validatedConfig.collectionName = configParams.collectionName.trim(); // Use collectionName
+    validatedConfig[entityFieldName] = configParams[entityFieldName].trim();
     validatedConfig.maxRows = configParams.maxRows && parseInt(configParams.maxRows) > 0 ? 
                              parseInt(configParams.maxRows) : 1000;
   } else if (configParams.configMode === 'customQuery') {
@@ -899,13 +946,19 @@ function getSchema(request) {
     let inferSchemaQuery = '';
     let targetCollectionPath = ''; 
 
-    if (configParams.configMode === 'collection') {
-      if (!configParams.database || !configParams.scope || !configParams.collectionName) {
-        throwUserError('Database, Scope, and Collection must be selected to infer schema in "Query by Collection" mode.');
+    if (configParams.configMode === 'view' || configParams.configMode === 'collection') {
+      const isViewMode = configParams.configMode === 'view';
+      const entityFieldName = isViewMode ? 'viewName' : 'collectionName';
+      const entityLabel = isViewMode ? 'View' : 'Collection';
+      const modeLabel = isViewMode ? 'Query by View' : 'Query by Collection';
+      const entityName = configParams[entityFieldName];
+      
+      if (!configParams.database || !configParams.scope || !entityName) {
+        throwUserError(`Database, Scope, and ${entityLabel} must be selected to infer schema in "${modeLabel}" mode.`);
       }
-      targetCollectionPath = `\`${configParams.database}\`.\`${configParams.scope}\`.\`${configParams.collectionName}\``;
+      targetCollectionPath = `\`${configParams.database}\`.\`${configParams.scope}\`.\`${entityName}\``;
       inferSchemaQuery = `SELECT array_infer_schema((SELECT VALUE t FROM ${targetCollectionPath} AS t LIMIT 1000)) AS inferred_schema;`;
-      Logger.log('getSchema: Inferring schema from collection: %s', targetCollectionPath);
+      Logger.log(`getSchema: Inferring schema from ${entityLabel.toLowerCase()}: %s`, targetCollectionPath);
     } else if (configParams.configMode === 'customQuery') {
        if (!configParams.query || configParams.query.trim() === '') {
          throwUserError('Custom query must be specified to infer schema in "Use Custom Query" mode.');
@@ -1170,19 +1223,18 @@ function getData(request) {
     // Prepare the query
     let query = '';
     
-    if (configParams.configMode === 'customQuery') {
-      // Use custom query
-      if (!configParams.query || configParams.query.trim() === '') {
-        throwUserError('Custom query is missing in "Use Custom Query" mode.');
+    if (configParams.configMode === 'view' || configParams.configMode === 'collection') {
+      const isViewMode = configParams.configMode === 'view';
+      const entityFieldName = isViewMode ? 'viewName' : 'collectionName';
+      const entityLabel = isViewMode ? 'View' : 'Collection';
+      const modeLabel = isViewMode ? 'Query by View' : 'Query by Collection';
+      const entityName = configParams[entityFieldName];
+      
+      // Construct query based on entity and requested fields
+      if (!configParams.database || !configParams.scope || !entityName) {
+        throwUserError(`Database, Scope, and ${entityLabel} must be selected in "${modeLabel}" mode.`);
       }
-      query = configParams.query.trim();
-      Logger.log('getData: Using custom query as provided.');
-    } else if (configParams.configMode === 'collection') {
-      // Construct query based on collection and requested fields
-      if (!configParams.database || !configParams.scope || !configParams.collectionName) {
-        throwUserError('Database, Scope, and Collection must be selected in "Query by Collection" mode.');
-      }
-      const collectionPath = '`' + configParams.database + '`.`' + configParams.scope + '`.`' + configParams.collectionName + '`';
+      const entityPath = '`' + configParams.database + '`.`' + configParams.scope + '`.`' + entityName + '`';
       
       // Construct the SELECT clause
       let selectClause = '*'; // Default to * if no fields requested
@@ -1214,7 +1266,14 @@ function getData(request) {
       }
 
       // Use standard string concatenation
-      query = 'SELECT ' + selectClause + ' FROM ' + collectionPath + ' LIMIT ' + (configParams.maxRows || 1000); // Use maxRows from config or default
+      query = 'SELECT ' + selectClause + ' FROM ' + entityPath + ' LIMIT ' + (configParams.maxRows || 1000); // Use maxRows from config or default
+    } else if (configParams.configMode === 'customQuery') {
+      // Use custom query
+      if (!configParams.query || configParams.query.trim() === '') {
+        throwUserError('Custom query is missing in "Use Custom Query" mode.');
+      }
+      query = configParams.query.trim();
+      Logger.log('getData: Using custom query as provided.');
     } else {
       throwUserError('Invalid configuration mode specified for getData.');
     }
