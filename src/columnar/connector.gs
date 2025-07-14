@@ -463,8 +463,8 @@ function getConfig(request) {
       .setAllowOverride(true)
       .setIsDynamic(true); // Changing mode should trigger refresh
 
-    modeSelector.addOption(config.newOptionBuilder().setLabel('Query by View').setValue('view'));
-    modeSelector.addOption(config.newOptionBuilder().setLabel('Query by Collection').setValue('collection'));
+    modeSelector.addOption(config.newOptionBuilder().setLabel('By View').setValue('view'));
+    modeSelector.addOption(config.newOptionBuilder().setLabel('By Collection').setValue('collection'));
     modeSelector.addOption(config.newOptionBuilder().setLabel('Use Custom Query').setValue('customQuery'));
 
     const currentMode = configParams.configMode ? configParams.configMode : 'view';
@@ -485,7 +485,7 @@ function getConfig(request) {
       } else {
         config.newInfo()
           .setId('collection_warning')
-          .setText('⚠️ EXPERIMENTAL: Query by Collection is in prototyping phase. You may experience data type inconsistencies and schema inference may not show all fields during schema changes.');
+          .setText('⚠️ NOTICE: By Collection may produce unexpected results due to dynamic schema variations. Data type inconsistencies and incomplete field detection may occur when document structures change within the collection.');
         
         config.newInfo()
           .setId('collection_info')
@@ -626,7 +626,7 @@ function validateConfig(configParams) {
     const isViewMode = configParams.configMode === 'view';
     const entityFieldName = isViewMode ? 'viewName' : 'collectionName';
     const entityLabel = isViewMode ? 'View' : 'Collection';
-    const modeLabel = isViewMode ? 'Query by View' : 'Query by Collection';
+    const modeLabel = isViewMode ? 'By View' : 'By Collection';
     
     if (!configParams.database || configParams.database.trim() === '') {
       throwUserError(`Database must be specified in "${modeLabel}" mode.`);
@@ -950,7 +950,7 @@ function getSchema(request) {
       const isViewMode = configParams.configMode === 'view';
       const entityFieldName = isViewMode ? 'viewName' : 'collectionName';
       const entityLabel = isViewMode ? 'View' : 'Collection';
-      const modeLabel = isViewMode ? 'Query by View' : 'Query by Collection';
+      const modeLabel = isViewMode ? 'By View' : 'By Collection';
       const entityName = configParams[entityFieldName];
       
       if (!configParams.database || !configParams.scope || !entityName) {
@@ -1227,7 +1227,7 @@ function getData(request) {
       const isViewMode = configParams.configMode === 'view';
       const entityFieldName = isViewMode ? 'viewName' : 'collectionName';
       const entityLabel = isViewMode ? 'View' : 'Collection';
-      const modeLabel = isViewMode ? 'Query by View' : 'Query by Collection';
+      const modeLabel = isViewMode ? 'By View' : 'By Collection';
       const entityName = configParams[entityFieldName];
       
       // Construct query based on entity and requested fields
