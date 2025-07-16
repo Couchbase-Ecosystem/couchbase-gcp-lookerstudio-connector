@@ -54,10 +54,11 @@ function _constructApiUrl(path) {
  * @param {string} message The error message to display to the user.
  */
 function _throwUserError(message) {
-  DataStudioApp.createCommunityConnector()
-    .newUserError()
-    .setText(message)
-    .throwException(); // Actually throws the error to Looker Studio
+  // Create a custom error that preserves the message when caught
+  const customError = new Error(message);
+  customError.name = 'UserError';
+  customError.isUserError = true;
+  throw customError;
 }
 
 /**
@@ -608,24 +609,54 @@ function _processInferSchemaOutput(inferQueryResult) {
     return [{ name: 'empty_infer_result', label: 'INFER result is empty', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}];
   }
 
-  // Use the first "flavor" from the INFER results for schema generation.
-  const firstFlavor = inferQueryResult[0][0];
-
-  // Check if the first flavor contains properties.
-  if (!firstFlavor || !firstFlavor.properties) {
-    Logger.log('_processInferSchemaOutput: First flavor has no properties.');
-    // Return a placeholder field indicating no properties found.
-    return [{ name: 'no_properties_in_flavor', label: 'No properties in INFER result', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}];
-  }
-
+  // Process ALL flavors from the INFER results, not just the first one.
+  // Each flavor represents a different document structure variant.
+  const allFlavors = inferQueryResult[0]; // Get all flavors from the first result
   const schemaFields = []; // Array to hold the generated field definitions.
+  const processedFieldNames = new Set(); // Track processed field names to avoid duplicates.
+  
+  Logger.log('_processInferSchemaOutput: Processing %d flavors from INFER results', allFlavors.length);
+  
+  allFlavors.forEach((flavor, flavorIndex) => {
+    // Check if the current flavor contains properties.
+    if (!flavor || !flavor.properties) {
+      Logger.log('_processInferSchemaOutput: Flavor %d has no properties, skipping.', flavorIndex);
+      return; // Skip this flavor and continue with the next one.
+    }
+    
+    Logger.log('_processInferSchemaOutput: Processing flavor %d with properties: %s', 
+              flavorIndex, Object.keys(flavor.properties).join(', '));
+    
+    // Process fields from this flavor
+    const flavorFields = [];
+    extractFieldsFromProperties(flavor.properties, flavorFields, '');
+    
+    // Add fields from this flavor that haven't been seen before
+    flavorFields.forEach(field => {
+      if (!processedFieldNames.has(field.name)) {
+        schemaFields.push(field);
+        processedFieldNames.add(field.name);
+        Logger.log('_processInferSchemaOutput: Added field from flavor %d: %s (Type: %s)', 
+                  flavorIndex, field.name, field.dataType);
+      } else {
+        Logger.log('_processInferSchemaOutput: Field %s already exists from previous flavor, skipping', field.name);
+      }
+    });
+  });
+  
+  // Check if any valid fields were found across all flavors
+  if (schemaFields.length === 0) {
+    Logger.log('_processInferSchemaOutput: No valid fields found across all flavors.');
+    return [{ name: 'no_properties_in_flavors', label: 'No properties in any INFER flavors', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}];
+  }
 
   /**
    * Recursively extracts fields from nested properties object.
    * @param {Object} properties The properties object from the INFER result.
+   * @param {Array} targetArray The array to push field definitions to.
    * @param {string} [prefix=''] A prefix for nested field names (e.g., "address.").
    */
-  function extractFieldsFromProperties(properties, prefix = '') {
+  function extractFieldsFromProperties(properties, targetArray, prefix = '') {
     Object.keys(properties).forEach(key => {
       const fieldDef = properties[key]; // Definition of the current field from INFER output.
       const fieldName = prefix ? `${prefix}.${key}` : key; // Construct full field name (e.g., "user.name").
@@ -676,7 +707,7 @@ function _processInferSchemaOutput(inferQueryResult) {
 
       } else if (inferTypes.includes('object') && fieldDef.properties) {
         // Recursively process nested objects.
-        extractFieldsFromProperties(fieldDef.properties, fieldName);
+        extractFieldsFromProperties(fieldDef.properties, targetArray, fieldName);
         return; // Return early as fields are added in the recursive call.
       } else if (inferTypes.includes('array')) {
         // Arrays are typically represented as STRING (e.g., JSON stringified).
@@ -684,8 +715,8 @@ function _processInferSchemaOutput(inferQueryResult) {
       }
       // Else, it remains STRING/DIMENSION by default.
 
-      // Add the processed field to the schema.
-      schemaFields.push({
+      // Add the processed field to the target array.
+      targetArray.push({
         name: fieldName,
         label: fieldName, // Use field name as label by default.
         dataType: dataType,
@@ -694,18 +725,7 @@ function _processInferSchemaOutput(inferQueryResult) {
     });
   }
 
-  extractFieldsFromProperties(firstFlavor.properties); // Start extraction from top-level properties.
-
-  // If, after processing, no fields were added, return a placeholder.
-  // Also check if the only field is the placeholder 'empty_infer_result' etc.
-  if (schemaFields.length === 0 || 
-      (schemaFields.length === 1 && 
-       (schemaFields[0].name === 'empty_infer_result' || 
-        schemaFields[0].name === 'no_properties_in_flavor'))) {
-      Logger.log('_processInferSchemaOutput: Warning: Schema inference from INFER resulted in zero or placeholder fields.');
-      // Return empty array to signify to caller that INFER didn't yield a good schema.
-      return []; 
-  }
+  // Multi-flavor processing already handles empty schema cases above, so no additional check needed here.
 
   Logger.log('_processInferSchemaOutput: Final schema fields from INFER: %s', JSON.stringify(schemaFields));
   return schemaFields; // Return the array of generated field definitions.
@@ -863,8 +883,15 @@ function getSchema(request) {
       
       schemaFields = _processInferSchemaOutput(inferResults);
       if (!schemaFields || schemaFields.length === 0 || (schemaFields.length === 1 && schemaFields[0].name.startsWith('empty_'))) {
-         Logger.log('getSchema (collectionMode): INFER results processed but yielded no valid fields. Returning placeholder.');
-         return { schema: [{ name: 'empty_collection_infer_schema', label: 'INFER on collection failed or yielded empty schema', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}] };
+         Logger.log('getSchema (collectionMode): INFER results processed but yielded no valid fields.');
+         const entityPath = `${rawBucket}.${rawScope}.${rawCollection}`;
+         _throwUserError(
+           `The collection "${entityPath}" appears to be empty or does not exist. ` +
+           `Please verify:\n` +
+           `1. The collection exists and contains data\n` +
+           `2. Your credentials have permission to access this collection\n` +
+           `3. The bucket, scope, and collection names are correct`
+         );
       }
 
       Logger.log('getSchema (collectionMode): Final schema from INFER: %s', JSON.stringify(schemaFields));
@@ -934,7 +961,14 @@ function getSchema(request) {
         const queryResult = JSON.parse(response.getContentText());
         if (!queryResult.results || queryResult.results.length === 0) {
           Logger.log('getSchema (customQuery Fallback): Custom query returned no results for schema inference.');
-          return { schema: [{ name: 'empty_custom_query_result', label: 'Empty Custom Query Result (Fallback)', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}] };
+          _throwUserError(
+            `The custom query returned no results. ` +
+            `Please verify:\n` +
+            `1. Your query syntax is correct\n` +
+            `2. The referenced collections exist and contain data\n` +
+            `3. Your credentials have permission to access the referenced collections\n` +
+            `4. The query conditions match existing data`
+          );
         }
 
         const documentForSchemaInference = queryResult.results[0];
@@ -982,7 +1016,13 @@ function getSchema(request) {
 
         if (schemaFields.length === 0) {
           Logger.log('Warning: Schema inference for custom query (fallback) resulted in zero fields.');
-          return { schema: [{ name: 'empty_custom_query_schema_fallback', label: 'Empty Custom Query Schema (Fallback)', dataType: 'STRING', semantics: { conceptType: 'DIMENSION' }}] };
+          _throwUserError(
+            `Schema inference failed for the custom query. ` +
+            `Please verify:\n` +
+            `1. Your query returns data with recognizable field types\n` +
+            `2. The query result contains at least one document\n` +
+            `3. The document structure is not empty or contains only null values`
+          );
         }
         Logger.log('getSchema (customQuery Fallback): Final inferred schema: %s', JSON.stringify(schemaFields));
         return { schema: schemaFields };
@@ -995,7 +1035,21 @@ function getSchema(request) {
   } catch (e) {
     // Catch-all for errors during schema retrieval.
     Logger.log('Error in getSchema: %s. Stack: %s', e.message, e.stack);
-    _throwUserError(`Error inferring schema: ${e.message}`); // Throw a user-friendly error.
+    
+    // Check if this is a user error that should be displayed to the user
+    if (e.isUserError || e.name === 'UserError') {
+      // Convert to Apps Script user error for proper display
+      DataStudioApp.createCommunityConnector()
+        .newUserError()
+        .setText(e.message)
+        .throwException();
+    }
+    
+    // For genuine system errors, wrap with context
+    DataStudioApp.createCommunityConnector()
+      .newUserError()
+      .setText(`Error inferring schema: ${e.message || e.toString()}`)
+      .throwException();
   }
 }
 
@@ -1178,7 +1232,21 @@ function getData(request) {
   } catch (e) {
     Logger.log('Error in getData: %s. Stack: %s', e.message, e.stack);
     const errorMessage = typeof e.getText === 'function' ? e.getText() : e.message;
-    _throwUserError(`Error retrieving data: ${errorMessage}`);
+    
+    // Check if this is a user error that should be displayed to the user
+    if (e.isUserError || e.name === 'UserError') {
+      // Convert to Apps Script user error for proper display
+      DataStudioApp.createCommunityConnector()
+        .newUserError()
+        .setText(e.message)
+        .throwException();
+    }
+    
+    // For genuine system errors, wrap with context
+    DataStudioApp.createCommunityConnector()
+      .newUserError()
+      .setText(`Error retrieving data: ${errorMessage}`)
+      .throwException();
   }
 }
 

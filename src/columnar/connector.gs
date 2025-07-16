@@ -1012,24 +1012,78 @@ function getSchema(request) {
        throwUserError('Invalid response from Couchbase API during schema inference: ' + e.message);
     }
 
-    if (!parsedResponse.results || parsedResponse.results.length === 0 || !parsedResponse.results[0].inferred_schema) {
+    if (!parsedResponse.results || parsedResponse.results.length === 0) {
+      Logger.log('Schema inference query did not return results. Response: %s', responseBody);
+      throwUserError('Schema inference failed: No results returned from the query.');
+    }
+
+    // Check if inferred_schema property exists but is null (empty collection case)
+    if (!parsedResponse.results[0].hasOwnProperty('inferred_schema')) {
       Logger.log('Schema inference query did not return the expected structure. Response: %s', responseBody);
       throwUserError('Schema inference failed: Could not find inferred_schema in the response.');
     }
 
     const inferredSchemaArray = parsedResponse.results[0].inferred_schema;
+    
+    // Handle the case where inferred_schema is null (empty collection)
+    if (inferredSchemaArray === null) {
+      const entityType = configParams.configMode === 'view' ? 'view' : 
+                        configParams.configMode === 'collection' ? 'collection' : 'query result';
+      const entityPath = configParams.configMode === 'customQuery' ? 'custom query' : 
+                        `${configParams.database}.${configParams.scope}.${configParams[configParams.configMode === 'view' ? 'viewName' : 'collectionName']}`;
+      
+      Logger.log('Schema inference returned null - empty %s: %s', entityType, entityPath);
+      throwUserError(
+        `The ${entityType} "${entityPath}" appears to be empty or does not exist. ` +
+        `Please verify:\n` +
+        `1. The ${entityType} exists and contains data\n` +
+        `2. Your credentials have permission to access this ${entityType}\n` +
+        `3. The database, scope, and ${entityType} names are correct`
+      );
+    }
+    
     if (!Array.isArray(inferredSchemaArray) || inferredSchemaArray.length === 0) {
        Logger.log('Inferred schema array is empty or not an array.');
        throwUserError('Schema inference failed: Invalid inferred_schema structure.');
     }
 
-    const schemaDefinition = inferredSchemaArray[0];
-    if (!schemaDefinition || schemaDefinition.type !== 'object' || !schemaDefinition.properties) {
-       Logger.log('Inferred schema does not contain a valid top-level object with properties.');
-       throwUserError('Schema inference failed: Could not find properties in the inferred schema.');
+    // Process ALL flavors from array_infer_schema, not just the first one
+    // Each flavor represents a different document structure variant
+    let allFields = [];
+    const processedFieldNames = new Set();
+    
+    Logger.log('getSchema: Processing %d schema flavors from array_infer_schema', inferredSchemaArray.length);
+    
+    inferredSchemaArray.forEach((schemaDefinition, flavorIndex) => {
+      if (!schemaDefinition || schemaDefinition.type !== 'object' || !schemaDefinition.properties) {
+        Logger.log('getSchema: Flavor %d does not contain valid object properties, skipping', flavorIndex);
+        return;
+      }
+      
+      Logger.log('getSchema: Processing flavor %d with %d documents (%.1f%% of total)', 
+                flavorIndex, schemaDefinition['#docs'], schemaDefinition['%docs']);
+      
+      const flavorFields = processInferredProperties(schemaDefinition.properties);
+      
+      // Add fields from this flavor that haven't been seen before
+      flavorFields.forEach(field => {
+        if (!processedFieldNames.has(field.name)) {
+          allFields.push(field);
+          processedFieldNames.add(field.name);
+          Logger.log('getSchema: Added field from flavor %d: %s (Type: %s)', 
+                    flavorIndex, field.name, field.dataType);
+        } else {
+          Logger.log('getSchema: Field %s already exists from previous flavor, skipping', field.name);
+        }
+      });
+    });
+    
+    if (allFields.length === 0) {
+       Logger.log('getSchema: No valid schema flavors found with properties.');
+       throwUserError('Schema inference failed: Could not find properties in any schema flavor.');
     }
 
-    const fields = processInferredProperties(schemaDefinition.properties);
+    let fields = allFields;
 
     if (fields.length === 0) {
        Logger.log('Warning: Schema inference resulted in zero fields. Check collection/query and data.');
@@ -1042,7 +1096,21 @@ function getSchema(request) {
   } catch (e) {
     Logger.log('Error in getSchema: %s', e.message);
     Logger.log('getSchema Error Stack: %s', e.stack);
-    throwUserError(`Error inferring schema: ${e.message}`);
+    
+    // Check if this is a user error that should be displayed to the user
+    if (e.isUserError || e.name === 'UserError') {
+      // Convert to Apps Script user error for proper display
+      DataStudioApp.createCommunityConnector()
+        .newUserError()
+        .setText(e.message)
+        .throwException();
+    }
+    
+    // For genuine system errors, wrap with context
+    DataStudioApp.createCommunityConnector()
+      .newUserError()
+      .setText(`Error inferring schema: ${e.message || e.toString()}`)
+      .throwException();
   }
 }
 
@@ -1494,7 +1562,21 @@ function getData(request) {
     // Improved error logging and handling
     const errorMessage = e.message ? e.message : 'An unspecified error occurred';
     Logger.log('Error in getData: %s. Full error object: %s', errorMessage, JSON.stringify(e)); 
-    throwUserError(`Error retrieving data: ${errorMessage}`);
+    
+    // Check if this is a user error that should be displayed to the user
+    if (e.isUserError || e.name === 'UserError') {
+      // Convert to Apps Script user error for proper display
+      DataStudioApp.createCommunityConnector()
+        .newUserError()
+        .setText(e.message)
+        .throwException();
+    }
+    
+    // For genuine system errors, wrap with context
+    DataStudioApp.createCommunityConnector()
+      .newUserError()
+      .setText(`Error retrieving data: ${errorMessage}`)
+      .throwException();
   }
 }
 
@@ -1607,10 +1689,11 @@ function getFieldsFromRequest(request) {
  * Throws a user-friendly error message.
  */
 function throwUserError(message) {
-  DataStudioApp.createCommunityConnector()
-    .newUserError()
-    .setText(message)
-    .throwException();
+  // Create a custom error that preserves the message when caught
+  const customError = new Error(message);
+  customError.name = 'UserError';
+  customError.isUserError = true;
+  throw customError;
 }
 
 /**

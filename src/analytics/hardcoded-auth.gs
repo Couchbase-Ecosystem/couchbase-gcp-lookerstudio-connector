@@ -112,7 +112,20 @@ function getSchema(request) {
     const schema = buildSchema(result);
     return { schema: schema };
   } catch (e) {
-    throwUserError(e);
+    // Check if this is a user error that should be displayed to the user
+    if (e.isUserError || e.name === 'UserError') {
+      // Convert to Apps Script user error for proper display
+      DataStudioApp.createCommunityConnector()
+        .newUserError()
+        .setText(e.message)
+        .throwException();
+    }
+    
+    // For genuine system errors, wrap with context
+    DataStudioApp.createCommunityConnector()
+      .newUserError()
+      .setText(`Schema error: ${e.message || e.toString()}`)
+      .throwException();
   }
 }
 
@@ -230,7 +243,20 @@ function getData(request) {
       rows: rows
     };
   } catch (e) {
-    throwUserError(e);
+    // Check if this is a user error that should be displayed to the user
+    if (e.isUserError || e.name === 'UserError') {
+      // Convert to Apps Script user error for proper display
+      DataStudioApp.createCommunityConnector()
+        .newUserError()
+        .setText(e.message)
+        .throwException();
+    }
+    
+    // For genuine system errors, wrap with context
+    DataStudioApp.createCommunityConnector()
+      .newUserError()
+      .setText(`Data retrieval error: ${e.message || e.toString()}`)
+      .throwException();
   }
 }
 
@@ -322,11 +348,11 @@ function fetchData(configParams) {
  * @param {string} message Error message.
  */
 function throwUserError(message) {
-  // Ensure cc is defined if it wasn't globally
-  const cc = DataStudioApp.createCommunityConnector(); 
-  cc.newUserError()
-    .setText(message)
-    .throwException();
+  // Create a custom error that preserves the message when caught
+  const customError = new Error(message);
+  customError.name = 'UserError';
+  customError.isUserError = true;
+  throw customError;
 }
 
 /**

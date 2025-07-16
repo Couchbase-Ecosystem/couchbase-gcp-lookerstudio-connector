@@ -500,7 +500,21 @@ function getSchema(request) {
   } catch (e) {
     Logger.log('Error during getSchema: %s', e.toString());
     Logger.log('getSchema Exception details: %s', e.stack);
-    throwUserError('Failed to get schema: ' + e.message);
+    
+    // Check if this is a user error that should be displayed to the user
+    if (e.isUserError || e.name === 'UserError') {
+      // Convert to Apps Script user error for proper display
+      DataStudioApp.createCommunityConnector()
+        .newUserError()
+        .setText(e.message)
+        .throwException();
+    }
+    
+    // For genuine system errors, wrap with context
+    DataStudioApp.createCommunityConnector()
+      .newUserError()
+      .setText(`Failed to get schema: ${e.message || e.toString()}`)
+      .throwException();
   }
 }
 
@@ -735,7 +749,21 @@ function getData(request) {
   } catch (e) {
     Logger.log('Error during getData: %s', e.toString());
     Logger.log('getData Exception details: %s', e.stack);
-    throwUserError('Failed to get data: ' + e.message);
+    
+    // Check if this is a user error that should be displayed to the user
+    if (e.isUserError || e.name === 'UserError') {
+      // Convert to Apps Script user error for proper display
+      DataStudioApp.createCommunityConnector()
+        .newUserError()
+        .setText(e.message)
+        .throwException();
+    }
+    
+    // For genuine system errors, wrap with context
+    DataStudioApp.createCommunityConnector()
+      .newUserError()
+      .setText(`Failed to get data: ${e.message || e.toString()}`)
+      .throwException();
   }
 }
 
@@ -876,10 +904,11 @@ function getFieldsFromRequest(request) {
  * Throws a user-friendly error message.
  */
 function throwUserError(message) {
-  DataStudioApp.createCommunityConnector()
-    .newUserError()
-    .setText(message)
-    .throwException();
+  // Create a custom error that preserves the message when caught
+  const customError = new Error(message);
+  customError.name = 'UserError';
+  customError.isUserError = true;
+  throw customError;
 }
 
 /**
