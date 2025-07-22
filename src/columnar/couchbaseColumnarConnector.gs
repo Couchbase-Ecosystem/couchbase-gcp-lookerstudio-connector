@@ -1,6 +1,7 @@
 /**
  * Couchbase Columnar Connector for Google Looker Studio
  * This connector allows users to connect to a Couchbase database and run Columnar queries.
+ * Supports Views, Collections, and Custom Queries.
  */
 
 // ==========================================================================
