@@ -1,7 +1,7 @@
 /**
  * Couchbase Columnar Connector for Google Looker Studio (Views and Custom Query Only)
  * This connector allows users to connect to a Couchbase database and run Columnar queries.
- * Supports only Views and Custom Queries - Collection mode has been removed.
+ * Supports only Views and Custom Queries.
  */
 
 // ==========================================================================
@@ -153,7 +153,6 @@ function resetAuth() {
 /**
  * Fetches available databases, scopes, and views from Couchbase.
  * Used to populate dropdowns in the config UI.
- * Note: Collection support has been removed from this version.
  */
 function fetchCouchbaseMetadata() {
   // Get stored credentials from PropertiesService
@@ -188,7 +187,7 @@ function fetchCouchbaseMetadata() {
     validateHttpsCertificates: false
   };
   
-  // Initialize empty result structure - only views, no collections
+  // Initialize empty result structure for views
   let databaseNames = [];
   const scopesViews = {};
   
@@ -242,7 +241,7 @@ function fetchCouchbaseMetadata() {
         }
       }
       
-      // Get only views (no collections)
+      // Get only views
       const viewsQueryPayload = {
         statement: "SELECT DatabaseName, DataverseName, DatasetName FROM System.Metadata.`Dataset` WHERE DatabaseName != 'System' AND DatasetType = 'VIEW'",
         timeout: "10000ms"
@@ -290,7 +289,7 @@ function fetchCouchbaseMetadata() {
         }
       }
     } else {
-      // Fall back to legacy approach - but only look for views
+      // Fall back to legacy approach for views
       Logger.log('fetchCouchbaseMetadata: System.Metadata is not accessible, using legacy approach (views only)');
       
       // For legacy systems, we can't easily distinguish views from collections
@@ -346,7 +345,6 @@ function fetchCouchbaseMetadata() {
 
 /**
  * Returns the user configurable options for the connector.
- * Note: Collection support has been removed - only supports Views and Custom Queries.
  */
 function getConfig(request) {
   const cc = DataStudioApp.createCommunityConnector();
@@ -372,7 +370,7 @@ function getConfig(request) {
       .setAllowOverride(true)
       .setIsDynamic(true); // Changing mode should trigger refresh
 
-    // Only view and custom query modes - collection support removed
+    // Only view and custom query modes are supported
     modeSelector.addOption(config.newOptionBuilder().setLabel('By View').setValue('view'));
     modeSelector.addOption(config.newOptionBuilder().setLabel('Use Custom Query').setValue('customQuery'));
 
@@ -498,7 +496,6 @@ function getConfig(request) {
 
 /**
  * Validates the user configuration and returns the validated configuration object.
- * Note: Collection mode validation has been removed.
  *
  * @param {Object} configParams The user configuration parameters.
  * @return {Object} The validated configuration object.
@@ -749,7 +746,6 @@ function processDocument(document) {
 
 /**
  * Returns the schema for the given request.
- * Note: Collection mode has been removed - only supports Views and Custom Queries.
  *
  * @param {Object} request The request.
  * @return {Object} The schema response.
@@ -1151,7 +1147,6 @@ function buildSchema(result) {
 
 /**
  * Returns the data for the given request.
- * Note: Collection mode has been removed - only supports Views and Custom Queries.
  *
  * @param {Object} request The request.
  * @return {Object} The data response.
