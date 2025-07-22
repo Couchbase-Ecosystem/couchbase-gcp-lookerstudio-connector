@@ -385,6 +385,11 @@ function getConfig(request) {
         .setId('view_info')
         .setText('Select the Database, Scope, and View to query. Views provide a stable, optimized interface for BI tools.');
 
+      // Add schema inference warning for view mode
+      config.newInfo()
+        .setId('schema_warning')
+        .setText('⚠️ Schema Detection: Field types are inferred from sampled data and may miss variations (e.g., fields containing both text and numbers). Some fields present in unsampled documents may not be detected.');
+
       const metadata = fetchCouchbaseMetadata();
       Logger.log('getConfig (view mode): Metadata: %s', JSON.stringify(metadata));
 
@@ -449,8 +454,8 @@ function getConfig(request) {
           .newTextInput()
           .setId('maxRows')
           .setName('Maximum Rows')
-          .setHelpText('Maximum number of rows to return (default: 1000).')
-          .setPlaceholder('1000')
+          .setHelpText('Maximum number of rows to return (optional - leave blank for no limit).')
+          .setPlaceholder('Leave blank for no limit')
           .setAllowOverride(true);
       }
 
@@ -458,6 +463,12 @@ function getConfig(request) {
       config.newInfo()
         .setId('custom_query_info')
         .setText('Enter your custom Columnar query below.');
+
+      // Add schema inference warning for custom query mode
+      config.newInfo()
+        .setId('schema_warning')
+        .setText('⚠️ Schema Detection: Field types are inferred from sampled data and may miss variations (e.g., fields containing both text and numbers). Some fields present in unsampled documents may not be detected.');
+
       config
         .newTextArea()
         .setId('query')
@@ -536,7 +547,7 @@ function validateConfig(configParams) {
     validatedConfig.scope = configParams.scope.trim();
     validatedConfig.viewName = configParams.viewName.trim();
     validatedConfig.maxRows = configParams.maxRows && parseInt(configParams.maxRows) > 0 ? 
-                             parseInt(configParams.maxRows) : 1000;
+                             parseInt(configParams.maxRows) : null; // No limit if not specified
   } else if (configParams.configMode === 'customQuery') {
     if (!configParams.query || configParams.query.trim() === '') {
       throwUserError('Custom query must be specified in "Use Custom Query" mode.');
@@ -844,16 +855,17 @@ function getSchema(request) {
         throwUserError('Database, Scope, and View must be selected to infer schema in "By View" mode.');
       }
       targetCollectionPath = `\`${configParams.database}\`.\`${configParams.scope}\`.\`${configParams.viewName}\``;
-      inferSchemaQuery = `SELECT array_infer_schema((SELECT VALUE t FROM ${targetCollectionPath} AS t LIMIT 1000)) AS inferred_schema;`;
+      
+      // Use same limit as data query for consistency
+      const limitClause = configParams.maxRows ? ` LIMIT ${configParams.maxRows}` : '';
+      inferSchemaQuery = `SELECT array_infer_schema((SELECT VALUE t FROM ${targetCollectionPath} AS t${limitClause})) AS inferred_schema;`;
       Logger.log('getSchema: Inferring schema from view: %s', targetCollectionPath);
     } else if (configParams.configMode === 'customQuery') {
        if (!configParams.query || configParams.query.trim() === '') {
          throwUserError('Custom query must be specified to infer schema in "Use Custom Query" mode.');
        }
+       // Use exact same query as data retrieval for consistency
        let userQuery = configParams.query.trim().replace(/;$/, '');
-       if (!userQuery.toLowerCase().includes('limit')) {
-         userQuery += ' LIMIT 1000'; 
-       }
        inferSchemaQuery = `SELECT array_infer_schema((${userQuery})) AS inferred_schema;`;
        Logger.log('getSchema: Inferring schema from custom query results.');
     } else {
@@ -1169,8 +1181,8 @@ function getData(request) {
     Logger.log('Requested fields object: %s', JSON.stringify(requestedFieldsArray));
     Logger.log('Requested field IDs array: %s', JSON.stringify(requestedFieldIds)); // Log the IDs
     
-    // Determine max rows
-    const maxRows = parseInt(configParams.maxRows, 10) || 1000;
+    // Determine max rows (null means no limit)
+    const maxRows = configParams.maxRows ? parseInt(configParams.maxRows, 10) : null;
     
     // Construct the API URL
     const columnarUrl = constructApiUrl(path, 18095);
@@ -1220,7 +1232,8 @@ function getData(request) {
       }
 
       // Use standard string concatenation
-      query = 'SELECT ' + selectClause + ' FROM ' + viewPath + ' LIMIT ' + (configParams.maxRows || 1000); // Use maxRows from config or default
+      const limitClause = configParams.maxRows ? ' LIMIT ' + configParams.maxRows : ''; // Only add LIMIT if specified
+      query = 'SELECT ' + selectClause + ' FROM ' + viewPath + limitClause;
     } else if (configParams.configMode === 'customQuery') {
       // Use custom query
       if (!configParams.query || configParams.query.trim() === '') {

@@ -477,7 +477,7 @@ function getConfig(request) {
       const entityLabelPlural = isViewMode ? 'Views' : 'Collections';
       const scopesDataKey = isViewMode ? 'scopesViews' : 'scopesCollections';
       
-      // Add mode-specific info messages
+      // Add mode-specific info and warnings
       if (isViewMode) {
         config.newInfo()
           .setId('view_info')
@@ -485,12 +485,17 @@ function getConfig(request) {
       } else {
         config.newInfo()
           .setId('collection_warning')
-          .setText('⚠️ NOTICE: By Collection may produce unexpected results due to dynamic schema variations. Data type inconsistencies and incomplete field detection may occur when document structures change within the collection.');
+          .setText('⚠️ NOTICE: Collections have dynamic schemas. If new fields are added to documents after connector setup, you must recreate the data source to access them - refreshing data alone will not detect new fields.');
         
         config.newInfo()
           .setId('collection_info')
           .setText('Select the Database, Scope, and Collection to query.');
       }
+
+      // Add schema inference warnings for all modes
+      config.newInfo()
+        .setId('schema_warning')
+        .setText('⚠️ Schema Detection: Field types are inferred from sampled data and may miss variations (e.g., fields containing both text and numbers). Some fields present in unsampled documents may not be detected.');
 
       const metadata = fetchCouchbaseMetadata();
       Logger.log(`getConfig (${currentMode} mode): Metadata: %s`, JSON.stringify(metadata));
@@ -556,8 +561,8 @@ function getConfig(request) {
           .newTextInput()
           .setId('maxRows')
           .setName('Maximum Rows')
-          .setHelpText('Maximum number of rows to return (default: 1000).')
-          .setPlaceholder('1000')
+          .setHelpText('Maximum number of rows to return (optional - leave blank for no limit).')
+          .setPlaceholder('Leave blank for no limit')
           .setAllowOverride(true);
       }
 
@@ -565,6 +570,12 @@ function getConfig(request) {
       config.newInfo()
         .setId('custom_query_info')
         .setText('Enter your custom Columnar query below.');
+
+      // Add schema inference warning for custom query mode
+      config.newInfo()
+        .setId('schema_warning')
+        .setText('⚠️ Schema Detection: Field types are inferred from sampled data and may miss variations (e.g., fields containing both text and numbers). Some fields present in unsampled documents may not be detected.');
+
       config
         .newTextArea()
         .setId('query')
@@ -642,7 +653,7 @@ function validateConfig(configParams) {
     validatedConfig.scope = configParams.scope.trim();
     validatedConfig[entityFieldName] = configParams[entityFieldName].trim();
     validatedConfig.maxRows = configParams.maxRows && parseInt(configParams.maxRows) > 0 ? 
-                             parseInt(configParams.maxRows) : 1000;
+                             parseInt(configParams.maxRows) : null; // No limit if not specified
   } else if (configParams.configMode === 'customQuery') {
     if (!configParams.query || configParams.query.trim() === '') {
       throwUserError('Custom query must be specified in "Use Custom Query" mode.');
@@ -957,16 +968,17 @@ function getSchema(request) {
         throwUserError(`Database, Scope, and ${entityLabel} must be selected to infer schema in "${modeLabel}" mode.`);
       }
       targetCollectionPath = `\`${configParams.database}\`.\`${configParams.scope}\`.\`${entityName}\``;
-      inferSchemaQuery = `SELECT array_infer_schema((SELECT VALUE t FROM ${targetCollectionPath} AS t LIMIT 1000)) AS inferred_schema;`;
+      
+      // Use same limit as data query for consistency
+      const limitClause = configParams.maxRows ? ` LIMIT ${configParams.maxRows}` : '';
+      inferSchemaQuery = `SELECT array_infer_schema((SELECT VALUE t FROM ${targetCollectionPath} AS t${limitClause})) AS inferred_schema;`;
       Logger.log(`getSchema: Inferring schema from ${entityLabel.toLowerCase()}: %s`, targetCollectionPath);
     } else if (configParams.configMode === 'customQuery') {
        if (!configParams.query || configParams.query.trim() === '') {
          throwUserError('Custom query must be specified to infer schema in "Use Custom Query" mode.');
        }
+       // Use exact same query as data retrieval for consistency
        let userQuery = configParams.query.trim().replace(/;$/, '');
-       if (!userQuery.toLowerCase().includes('limit')) {
-         userQuery += ' LIMIT 1000'; 
-       }
        inferSchemaQuery = `SELECT array_infer_schema((${userQuery})) AS inferred_schema;`;
        Logger.log('getSchema: Inferring schema from custom query results.');
     } else {
@@ -1277,8 +1289,8 @@ function getData(request) {
     Logger.log('Requested fields object: %s', JSON.stringify(requestedFieldsArray));
     Logger.log('Requested field IDs array: %s', JSON.stringify(requestedFieldIds)); // Log the IDs
     
-    // Determine max rows
-    const maxRows = parseInt(configParams.maxRows, 10) || 1000;
+    // Determine max rows (null means no limit)
+    const maxRows = configParams.maxRows ? parseInt(configParams.maxRows, 10) : null;
     
     // Construct the API URL
     const columnarUrl = constructApiUrl(path, 18095);
@@ -1334,7 +1346,8 @@ function getData(request) {
       }
 
       // Use standard string concatenation
-      query = 'SELECT ' + selectClause + ' FROM ' + entityPath + ' LIMIT ' + (configParams.maxRows || 1000); // Use maxRows from config or default
+      const limitClause = configParams.maxRows ? ' LIMIT ' + configParams.maxRows : ''; // Only add LIMIT if specified
+      query = 'SELECT ' + selectClause + ' FROM ' + entityPath + limitClause;
     } else if (configParams.configMode === 'customQuery') {
       // Use custom query
       if (!configParams.query || configParams.query.trim() === '') {
