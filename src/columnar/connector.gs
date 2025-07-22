@@ -1077,7 +1077,7 @@ function getSchema(request) {
       
       const flavorFields = processInferredProperties(schemaDefinition.properties);
       
-      // Add fields from this flavor that haven't been seen before
+      // Add new fields or update types from latest flavor
       flavorFields.forEach(field => {
         if (!processedFieldNames.has(field.name)) {
           allFields.push(field);
@@ -1085,7 +1085,17 @@ function getSchema(request) {
           Logger.log('getSchema: Added field from flavor %d: %s (Type: %s)', 
                     flavorIndex, field.name, field.dataType);
         } else {
-          Logger.log('getSchema: Field %s already exists from previous flavor, skipping', field.name);
+          // Update field type from latest flavor (latest flavor wins)
+          const existingField = allFields.find(f => f.name === field.name);
+          
+          if (existingField.dataType !== field.dataType) {
+            Logger.log('getSchema: Updating field %s type from %s to %s (latest flavor wins)', 
+                      field.name, existingField.dataType, field.dataType);
+            existingField.dataType = field.dataType;
+            existingField.semantics = { conceptType: getConceptTypeFromLookerType(field.dataType) };
+          } else {
+            Logger.log('getSchema: Field %s type consistent across flavors (%s)', field.name, field.dataType);
+          }
         }
       });
     });
