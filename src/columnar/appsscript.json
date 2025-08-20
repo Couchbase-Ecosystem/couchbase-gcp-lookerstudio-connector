@@ -4,7 +4,7 @@
   "exceptionLogging": "STACKDRIVER",
   "runtimeVersion": "V8",
   "dataStudio": {
-    "name": "Couchbase Columnar Connector",
+    "name": "Couchbase Columnar",
     "logoUrl": "https://toppng.com/uploads/preview/couchbase-logo-11609358583zeesg8fjx7.png",
     "company": "Couchbase",
     "companyUrl": "https://www.couchbase.com/",
