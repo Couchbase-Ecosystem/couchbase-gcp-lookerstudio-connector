@@ -4,9 +4,9 @@
   "exceptionLogging": "STACKDRIVER",
   "runtimeVersion": "V8",
   "dataStudio": {
-    "name": "Couchbase",
+    "name": "Couchbase DataApi Connector",
     "logoUrl": "https://toppng.com/uploads/preview/couchbase-logo-11609358583zeesg8fjx7.png",
-    "company": "Couchbase Community Connector",
+    "company": "Couchbase",
     "companyUrl": "https://www.couchbase.com/",
     "addonUrl": "https://github.com/googledatastudio/community-connectors/tree/master/couchbase",
     "supportUrl": "https://github.com/googledatastudio/community-connectors/issues/new?title=Couchbase%20Connector%20Issue",
