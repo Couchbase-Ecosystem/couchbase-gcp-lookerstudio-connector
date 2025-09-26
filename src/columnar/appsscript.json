@@ -8,17 +8,14 @@
     "logoUrl": "https://toppng.com/uploads/preview/couchbase-logo-11609358583zeesg8fjx7.png",
     "company": "Couchbase",
     "companyUrl": "https://www.couchbase.com/",
-    "addonUrl": "https://github.com/googledatastudio/community-connectors/tree/master/couchbase",
-    "supportUrl": "https://github.com/googledatastudio/community-connectors/issues/new?title=Couchbase%20Connector%20Issue",
+    "addonUrl": "https://developer.couchbase.com/tutorial-looker-studio-columnar/",
+    "supportUrl": "https://github.com/Couchbase-Ecosystem/couchbase-gcp-lookerstudio-connector/issues",
     "description": "Connect to and visualize data from Couchbase Server or Capella. This connector supports N1QL queries, scopes and collections, vector search (7.6+), and advanced query options for optimal performance.",
     "sources": [
-      "COUCHBASE"
+      "COUCHBASE_COLUMNAR"
     ],
     "authType": [
       "PATH_USER_PASS"
-    ],
-    "feeType": [
-      "FREE"
     ]
   },
   "oauthScopes": [
