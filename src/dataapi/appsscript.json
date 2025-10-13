@@ -9,7 +9,12 @@
     "company": "Couchbase",
     "companyUrl": "https://www.couchbase.com/",
     "addonUrl": "https://developer.couchbase.com/tutorial-looker-studio-dataapi/",
-    "supportUrl": "https://github.com/Couchbase-Ecosystem/couchbase-gcp-lookerstudio-connector/issues", "description": "Connect to and visualize data from Couchbase Server or Capella. This connector supports N1QL queries, scopes and collections, vector search (7.6+), and advanced query options for optimal performance.",
+    "supportUrl": "https://github.com/Couchbase-Ecosystem/couchbase-gcp-lookerstudio-connector/issues",
+    "shortDescription": "Connect to Couchbase Server to visualize your data with N1QL queries and analytics",
+    "description": "Connect to and visualize data from Couchbase Server or Capella. This connector supports N1QL queries, scopes and collections, vector search (7.6+), and advanced query options for optimal performance.",
+    "feeType": ["FREE"],
+    "privacyPolicyUrl": "https://www.couchbase.com/privacy-policy/",
+    "termsOfServiceUrl": "https://www.couchbase.com/terms-of-use/",
     "sources": [
       "COUCHBASE"
     ],
@@ -19,5 +24,8 @@
   },
   "oauthScopes": [
     "https://www.googleapis.com/auth/script.external_request"
+  ],
+  "urlFetchWhitelist": [
+    "https://*.cloud.couchbase.com/_p/"
   ]
 }
