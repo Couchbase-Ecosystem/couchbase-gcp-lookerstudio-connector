@@ -26,6 +26,6 @@
     "https://www.googleapis.com/auth/script.external_request"
   ],
   "urlFetchWhitelist": [
-    "https://*.cloud.couchbase.com/api/"
+    "https://*.cloud.couchbase.com:18095/api/"
   ]
 }
