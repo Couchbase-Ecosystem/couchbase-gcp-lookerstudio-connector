@@ -16,7 +16,7 @@
     "privacyPolicyUrl": "https://www.couchbase.com/privacy-policy/",
     "termsOfServiceUrl": "https://www.couchbase.com/terms-of-use/",
     "sources": [
-      "COUCHBASE"
+      "COUCHBASE_DATA_API"
     ],
     "authType": [
       "PATH_USER_PASS"
@@ -26,6 +26,6 @@
     "https://www.googleapis.com/auth/script.external_request"
   ],
   "urlFetchWhitelist": [
-    "https://*.cloud.couchbase.com/_p/"
+    "https://*.cloud.couchbase.com/"
   ]
 }
