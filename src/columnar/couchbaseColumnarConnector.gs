@@ -21,16 +21,16 @@ function getAuthType() {
 
 /**
  * Attempts to validate credentials by making a minimal query to Couchbase Columnar.
- * Called by isAuthValid.
+ * Called by isAuthValid and setCredentials.
+ * Returns { valid: boolean, errorMessage: string|null }
  */
 function validateCredentials(path, username, password) {
-  // Log the raw path received from isAuthValid
   Logger.log('validateCredentials received path: %s', path);
-  
+
   Logger.log('Attempting to validate credentials against Columnar Service for path: %s, username: %s', path, username);
   if (!path || !username || !password) {
     Logger.log('Validation failed: Missing path, username, or password.');
-    return false; 
+    return { valid: false, errorMessage: 'Missing path, username, or password.' };
   }
 
   // Use constructApiUrl for consistent URL handling
@@ -50,28 +50,49 @@ function validateCredentials(path, username, password) {
     headers: {
       Authorization: 'Basic ' + Utilities.base64Encode(username + ':' + password)
     },
-    muteHttpExceptions: true, 
-    validateHttpsCertificates: false 
+    muteHttpExceptions: true,
+    validateHttpsCertificates: false
   };
 
   try {
     Logger.log('Sending validation request...');
     const response = UrlFetchApp.fetch(queryUrl, options);
     const responseCode = response.getResponseCode();
-    const responseText = response.getContentText(); 
+    const responseText = response.getContentText();
     Logger.log('Validation response code: %s', responseCode);
 
     if (responseCode === 200) {
       Logger.log('Credential validation successful.');
-      return true;
+      return { valid: true, errorMessage: null };
     } else {
       Logger.log('Credential validation failed. Code: %s, Response: %s', responseCode, responseText);
-      return false;
+      var errorMessage;
+      if (responseCode === 401) {
+        errorMessage = 'Authentication failed (HTTP 401): Invalid username or password.';
+      } else if (responseCode === 403) {
+        errorMessage = 'Access denied (HTTP 403): User does not have permission for Columnar queries.';
+      } else if (responseCode === 404) {
+        errorMessage = 'Service not found (HTTP 404): Verify that the Columnar analytics service is enabled on this cluster.';
+      } else {
+        errorMessage = 'Connection failed (HTTP ' + responseCode + '): ' + responseText.substring(0, 200);
+      }
+      return { valid: false, errorMessage: errorMessage };
     }
   } catch (e) {
     Logger.log('Credential validation failed with exception: %s', e.toString());
-    Logger.log('Exception details: %s', e.stack); 
-    return false;
+    Logger.log('Exception details: %s', e.stack);
+    var errorMessage;
+    var errorStr = e.toString();
+    if (errorStr.indexOf('Address unavailable') !== -1 || errorStr.indexOf('Connection refused') !== -1 || errorStr.indexOf('timed out') !== -1) {
+      errorMessage = 'Connection failed: Could not reach the server. If using Capella, ensure 0.0.0.0/0 is in your cluster\'s Allowed IP list (Google Apps Script uses dynamic IPs). URL attempted: ' + queryUrl;
+    } else if (errorStr.indexOf('whitelist') !== -1 || errorStr.indexOf('Whitelist') !== -1) {
+      errorMessage = 'URL blocked by connector whitelist. The connector can only access *.cloud.couchbase.com URLs. URL attempted: ' + queryUrl;
+    } else if (errorStr.indexOf('DNS') !== -1 || errorStr.indexOf('resolve') !== -1) {
+      errorMessage = 'DNS resolution failed: Could not resolve hostname. Check that the Path URL is correct. URL attempted: ' + queryUrl;
+    } else {
+      errorMessage = 'Connection error: ' + errorStr + '. URL attempted: ' + queryUrl;
+    }
+    return { valid: false, errorMessage: errorMessage };
   }
 }
 
@@ -93,13 +114,14 @@ function isAuthValid() {
   
   // Re-enable live validation now that URL handling is fixed
   Logger.log('isAuthValid: Found credentials. Performing live validation test.');
-  const isValid = validateCredentials(path, username, password);
-  Logger.log('isAuthValid: Validation result: %s', isValid);
-  return isValid;
+  const result = validateCredentials(path, username, password);
+  Logger.log('isAuthValid: Validation result: %s, error: %s', result.valid, result.errorMessage);
+  return result.valid;
 }
 
 /**
  * Sets the credentials entered by the user.
+ * Validates credentials before storing and surfaces actionable error messages.
  */
 function setCredentials(request) {
   Logger.log('setCredentials called.');
@@ -110,6 +132,25 @@ function setCredentials(request) {
 
   Logger.log('Received path: %s, username: %s, password: %s', path, username, '*'.repeat(password.length));
 
+  // Validate credentials before storing
+  const validationResult = validateCredentials(path, username, password);
+  if (!validationResult.valid) {
+    Logger.log('setCredentials: Validation failed: %s', validationResult.errorMessage);
+    // Store credentials anyway so user can retry without re-entering
+    try {
+      const userProperties = PropertiesService.getUserProperties();
+      userProperties.setProperty('dscc.path', path);
+      userProperties.setProperty('dscc.username', username);
+      userProperties.setProperty('dscc.password', password);
+    } catch (storeErr) {
+      Logger.log('Error storing credentials: %s', storeErr.toString());
+    }
+    return {
+      errorCode: 'INVALID_CREDENTIALS',
+      errorText: validationResult.errorMessage
+    };
+  }
+
   try {
     const userProperties = PropertiesService.getUserProperties();
     userProperties.setProperty('dscc.path', path);
@@ -119,11 +160,11 @@ function setCredentials(request) {
   } catch (e) {
     Logger.log('Error storing credentials: %s', e.toString());
     return {
-      errorCode: 'SystemError', 
+      errorCode: 'SystemError',
       errorText: 'Failed to store credentials: ' + e.toString()
     };
   }
-  
+
   Logger.log('setCredentials finished successfully.');
   return {
     errorCode: 'NONE'
@@ -1683,14 +1724,13 @@ function constructApiUrl(path, defaultPort) {
   // Check if port is already present (handles IPv4 and IPv6)
   const hasPort = /:\d+$|]:\d+$/.test(hostAndPort);
 
-  // Add default port regardless of whether it's Capella
-  if (!hasPort && defaultPort) {
+  // For Capella, do NOT add port — Capella routes through standard HTTPS (443)
+  // For non-Capella (on-prem), add default port 18095
+  if (isCapella) {
+    Logger.log('constructApiUrl: Capella URL detected, using standard HTTPS port: %s', hostAndPort);
+  } else if (!hasPort && defaultPort) {
     hostAndPort += ':' + defaultPort;
-    if (isCapella) {
-      Logger.log('constructApiUrl: Added port %s for Capella URL: %s', defaultPort, hostAndPort);
-    } else {
-      Logger.log('constructApiUrl: Added default port %s for URL: %s', defaultPort, hostAndPort);
-    }
+    Logger.log('constructApiUrl: Added default port %s for URL: %s', defaultPort, hostAndPort);
   } else if (hasPort) {
     Logger.log('constructApiUrl: Port already present in URL: %s', hostAndPort);
   }

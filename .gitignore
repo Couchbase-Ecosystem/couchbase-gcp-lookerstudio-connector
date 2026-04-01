@@ -1,5 +1,4 @@
 .qodo
-package-lock.json
 
 # Environment variables for demos
 demos/.env
