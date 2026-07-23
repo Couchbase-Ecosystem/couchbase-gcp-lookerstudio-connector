@@ -245,6 +245,16 @@ function setCredentials(request) {
   // Log received credentials, masking the password.
   Logger.log('Received path: %s, username: %s, password: %s', path, username, '*'.repeat(password.length)); // Password length logged, not the password itself
 
+  // Validate credentials against the Couchbase Data API BEFORE storing them.
+  // This lets Looker Studio display its built-in "invalid credentials" message on the
+  // authentication screen instead of silently accepting bad credentials and failing later.
+  if (!_validateCredentials(path, username, password)) {
+    Logger.log('setCredentials: Credential validation failed. Returning INVALID_CREDENTIALS.');
+    return {
+      errorCode: 'INVALID_CREDENTIALS'
+    };
+  }
+
   try {
     const userProperties = PropertiesService.getUserProperties();
     userProperties.setProperty('dscc.path', path);
@@ -255,7 +265,7 @@ function setCredentials(request) {
     Logger.log('Error storing credentials: %s', e.toString());
     // Return a system error if storing credentials fails.
     return {
-      errorCode: 'SystemError',
+      errorCode: 'SYSTEM_ERROR',
       errorText: 'Failed to store credentials: ' + e.toString() // Provide error details
     };
   }

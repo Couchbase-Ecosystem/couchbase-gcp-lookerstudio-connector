@@ -4,8 +4,8 @@
   "exceptionLogging": "STACKDRIVER",
   "runtimeVersion": "V8",
   "dataStudio": {
-    "name": "Couchbase DataApi",
-    "logoUrl": "https://toppng.com/uploads/preview/couchbase-logo-11609358583zeesg8fjx7.png",
+    "name": "Couchbase Data API",
+    "logoUrl": "https://raw.githubusercontent.com/Couchbase-Ecosystem/couchbase-gcp-lookerstudio-connector/0031d199996d3761c22931ae7b887a21004505a3/assets/couchbase-logo.png",
     "company": "Couchbase",
     "companyUrl": "https://www.couchbase.com/",
     "addonUrl": "https://developer.couchbase.com/tutorial-looker-studio-dataapi/",
